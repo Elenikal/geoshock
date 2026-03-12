@@ -1,0 +1,30 @@
+# Virtual environments
+.venv/
+.venv311/
+.venv313/
+
+# API keys - never commit
+config.py
+
+# Large outputs and cache
+outputs/
+data/cache/
+*.parquet
+
+# Bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Backups from our patches
+*.bak*
+*.bak_*
+
+# Environment files
+.env
+
+# macOS
+.DS_Store
+
+# PyCharm
+.idea/
