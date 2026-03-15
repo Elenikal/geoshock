@@ -17,17 +17,15 @@ Usage
   python run.py --use-cache        Skip API data fetch
   python run.py --no-llm           Rule-based CAMEO (no Anthropic key needed)
   python run.py --skip-var         Skip VAR (faster iteration)
+  python run.py --skip-oos         Skip OOS backtest (slow; ~5-10 min)
+  python run.py --skip-var --skip-oos --skip-iv   Fastest full run
+  python run.py --skip-iv          Skip IV endogeneity check
+  python populate_oos_table.py     After run: auto-fill OOS table in paper
   python run.py --lookback 72      GDELT lookback hours (default 48)
 ─────────────────────────────────────────────────────────────────────────────
 """
 
 from __future__ import annotations
-import sys, io
-# Force UTF-8 on stdout/stderr on Python 3.9 / macOS (default is ASCII/latin-1)
-if hasattr(sys.stdout, 'buffer'):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-if hasattr(sys.stderr, 'buffer'):
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 import argparse
 import json
@@ -43,12 +41,10 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-import io as _io
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
-    stream=_io.TextIOWrapper(open('/dev/stderr', 'wb'), encoding='utf-8', errors='replace'),
 )
 log = logging.getLogger(__name__)
 
@@ -230,6 +226,68 @@ def run_growth_at_risk(df: pd.DataFrame, l0_signal: dict | None = None) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+def run_oos(df: pd.DataFrame) -> dict:
+    log.info("\n" + "━" * 58)
+    log.info("  LAYER 2D — PSEUDO-OOS BACKTEST  (expanding window, 2010-2025)")
+    log.info("━" * 58)
+    try:
+        from models.quantile_risk import GaROOS
+        gipi_ok = "gipi" in df.columns and df["gipi"].notna().sum() >= 36
+        oos = GaROOS(
+            df=df, outcome="ip_yoy", gpr_col="gpr_z",
+            gipi_col="gipi" if gipi_ok else None,
+        )
+        results = oos.run(horizons=cfg.GAR_HORIZONS, eval_start="2010-01-01")
+
+        # Log headline results
+        for h, r in results.items():
+            impr_05 = r.improvement.get(0.05, np.nan)
+            impr_10 = r.improvement.get(0.10, np.nan)
+            p_05    = r.dm_pval.get(0.05, np.nan)
+            p_10    = r.dm_pval.get(0.10, np.nan)
+            log.info(
+                f"  h={h:2d} OOS (n={r.n_oos}):  "
+                f"impr τ=0.05={impr_05:.1f}% (DM p={p_05:.3f})  "
+                f"τ=0.10={impr_10:.1f}% (DM p={p_10:.3f})"
+            )
+
+        cfg.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        oos.save(str(cfg.OUTPUT_DIR / "oos_results.csv"))
+        return {"oos": oos, "results": results}
+    except Exception as e:
+        log.error(f"  OOS error: {e}")
+        return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+def run_iv(df: pd.DataFrame) -> dict:
+    log.info("\n" + "━" * 58)
+    log.info("  LAYER 2E — IV ENDOGENEITY CHECK  (OPEC spare cap + SPR)")
+    log.info("━" * 58)
+    try:
+        from models.iv_gipi import GIPIInstrumentalVariables
+        iv = GIPIInstrumentalVariables(
+            df=df, outcome="ip_yoy", gpr_col="gpr_z", gipi_col="gipi",
+            spr_col="spr_stocks", opec_col="opec_spare_cap",
+        )
+        results = iv.run(horizons=cfg.GAR_HORIZONS)
+        cfg.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        iv.save(str(cfg.OUTPUT_DIR / "iv_results.csv"))
+        log.info("\n  IV diagnostic summary:")
+        summary = iv.summary()
+        for _, row in summary.iterrows():
+            log.info(
+                f"  h={int(row.h):2d}: F={row.F_stat:.1f}  "
+                f"Sargan-p={row.Sargan_p:.3f}  DWH-p={row.DWH_p:.3f}  "
+                f"real_instr={int(row.real_instr)}/2  → {row.verdict}"
+            )
+        return {"iv": iv, "results": results, "summary": summary}
+    except Exception as e:
+        log.error(f"  IV error: {e}")
+        return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 def run_var(df: pd.DataFrame) -> dict:
     log.info("\n" + "━" * 58)
     log.info("  LAYER 2C — STRUCTURAL VAR + FEVD + GRANGER")
@@ -323,6 +381,10 @@ def main():
     ap.add_argument("--use-cache",    action="store_true")
     ap.add_argument("--no-llm",       action="store_true")
     ap.add_argument("--skip-var",     action="store_true")
+    ap.add_argument("--skip-oos",     action="store_true",
+                    help="Skip pseudo-OOS backtest (slow)")
+    ap.add_argument("--skip-iv",      action="store_true",
+                    help="Skip IV endogeneity check")
     ap.add_argument("--lookback",     type=int, default=48,
                     help="GDELT lookback hours (default 48)")
     args = ap.parse_args()
@@ -346,9 +408,13 @@ def main():
 
     # Layer 2
     _lp  = run_local_projections(df)
-    gar  = run_growth_at_risk(df)
+    gar  = run_growth_at_risk(df, l0_signal=l0 if not args.skip_layer0 else None)
     if not args.skip_var:
         _var = run_var(df)
+    if not args.skip_oos:
+        _oos = run_oos(df)
+    if not args.skip_iv:
+        _iv = run_iv(df)
 
     # Layer 3
     export_summary(df, l0, gar)

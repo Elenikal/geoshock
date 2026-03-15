@@ -37,6 +37,14 @@ warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger(__name__)
 
+
+def _end_date() -> str:
+    """Return cfg.END_DATE, defaulting to today if None."""
+    if cfg.END_DATE:
+        return str(cfg.END_DATE)
+    return pd.Timestamp.today().strftime("%Y-%m-%d")
+
+
 # ── Optional imports (graceful fallback) ─────────────────────────────────────
 try:
     from fredapi import Fred
@@ -131,7 +139,7 @@ def _fetch_gpr_fred() -> pd.Series:
         return _synthetic_gpr()
     fred = Fred(api_key=cfg.FRED_KEY)
     s = fred.get_series("GEPUCURRENT", observation_start=cfg.START_DATE,
-                        observation_end=cfg.END_DATE)
+                        observation_end=_end_date())
     s.name = "gpr"
     return s.resample("MS").mean()
 
@@ -140,7 +148,7 @@ def _synthetic_gpr() -> pd.Series:
     """Generate synthetic GPR for testing when no internet access."""
     import numpy as np
     np.random.seed(42)
-    dates = pd.date_range(cfg.START_DATE, cfg.END_DATE, freq="MS")
+    dates = pd.date_range(cfg.START_DATE, _end_date(), freq="MS")
     # Mean-reverting process with crisis spikes matching known episodes
     base = np.random.normal(100, 20, len(dates))
     base = pd.Series(base, index=dates)
@@ -208,6 +216,9 @@ FRED_INFLATION_CHANNELS = {
     "CUSR0000SAF11":     "cpi_food_home",     # CPI Food at Home (SA)
     # Strategic Petroleum Reserve (supply buffer signal)
     "WCSSTUS1":          "spr_stocks",        # US SPR Weekly Stocks (thousand barrels)
+    # OPEC crude oil production (EIA/STEO via FRED)
+    # Spare capacity proxy = 36-month rolling max minus current production
+    "WTOTQTW":           "opec_production",   # OPEC Crude Oil Production (mb/d)
     # USD index (pass-through amplifier)
     "DTWEXBGS":          "usd_index",         # Nominal Broad USD Index
 }
@@ -234,7 +245,7 @@ def fetch_fred_series(series_map: dict | None = None) -> pd.DataFrame:
             s = fred.get_series(
                 fred_id,
                 observation_start=cfg.START_DATE,
-                observation_end=cfg.END_DATE,
+                observation_end=_end_date(),
             )
             # Resample to month-start
             s = s.resample("MS").last().rename(col)
@@ -249,7 +260,7 @@ def fetch_fred_series(series_map: dict | None = None) -> pd.DataFrame:
 def _synthetic_fred(series_map: dict) -> pd.DataFrame:
     """Generate plausible synthetic FRED data for offline testing."""
     np.random.seed(123)
-    dates = pd.date_range(cfg.START_DATE, cfg.END_DATE, freq="MS")
+    dates = pd.date_range(cfg.START_DATE, _end_date(), freq="MS")
     n = len(dates)
     df = pd.DataFrame(index=dates)
 
@@ -350,7 +361,7 @@ def fetch_arab_light_eia() -> pd.Series:
         raise ValueError("No parseable data rows found")
     except Exception as e:
         log.warning(f"  EIA Arab Light fetch failed ({e}) — generating synthetic.")
-        dates = pd.date_range(cfg.START_DATE, cfg.END_DATE, freq="MS")
+        dates = pd.date_range(cfg.START_DATE, _end_date(), freq="MS")
         np.random.seed(1001)
         synthetic_wti = np.clip(50 + np.cumsum(np.random.normal(0, 3, len(dates))), 10, 140)
         # Arab Light typically trades ~$1–3 above WTI; spikes during ME crises
@@ -415,7 +426,7 @@ def fetch_fao_food_index() -> pd.DataFrame:
 def _fao_fallback_fred() -> pd.DataFrame:
     """Use FRED IMF food price index as FAO fallback."""
     if not FRED_AVAILABLE:
-        dates = pd.date_range(cfg.START_DATE, cfg.END_DATE, freq="MS")
+        dates = pd.date_range(cfg.START_DATE, _end_date(), freq="MS")
         np.random.seed(2002)
         df = pd.DataFrame(index=dates)
         df["fao_food"]    = 100 * np.exp(np.cumsum(np.random.normal(0.002, 0.012, len(dates))))
@@ -426,14 +437,14 @@ def _fao_fallback_fred() -> pd.DataFrame:
         fred = Fred(api_key=cfg.FRED_KEY)
         s = fred.get_series("PFOODINDEXM",
                             observation_start=cfg.START_DATE,
-                            observation_end=cfg.END_DATE)
+                            observation_end=_end_date())
         s = s.resample("MS").last()
         df = pd.DataFrame({"fao_food": s, "fao_cereals": s * 0.9, "fao_oils": s * 1.1})
         log.info(f"  FAO fallback via FRED PFOODINDEXM: {len(df)} obs")
         return df
     except Exception as e:
         log.warning(f"  FRED PFOODINDEXM also failed: {e}")
-        dates = pd.date_range(cfg.START_DATE, cfg.END_DATE, freq="MS")
+        dates = pd.date_range(cfg.START_DATE, _end_date(), freq="MS")
         return pd.DataFrame({"fao_food": np.nan, "fao_cereals": np.nan}, index=dates)
 
 
@@ -470,7 +481,7 @@ def fetch_yahoo_data(tickers: dict | None = None) -> pd.DataFrame:
             raw = yf.download(
                 ticker,
                 start=cfg.START_DATE,
-                end=cfg.END_DATE,
+                end=_end_date(),
                 progress=False,
                 auto_adjust=True,
             )
@@ -492,7 +503,7 @@ def fetch_yahoo_data(tickers: dict | None = None) -> pd.DataFrame:
 
 def _synthetic_yahoo(tickers: dict) -> pd.DataFrame:
     np.random.seed(456)
-    dates = pd.date_range(cfg.START_DATE, cfg.END_DATE, freq="MS")
+    dates = pd.date_range(cfg.START_DATE, _end_date(), freq="MS")
     n = len(dates)
     df = pd.DataFrame(index=dates)
     for col in tickers.values():
@@ -527,7 +538,7 @@ def fetch_gscpi() -> pd.Series:
         return s
     except Exception as e:
         log.warning(f"  GSCPI fetch failed ({e}) — generating synthetic.")
-        dates = pd.date_range("1998-01-01", cfg.END_DATE, freq="MS")
+        dates = pd.date_range("1998-01-01", _end_date(), freq="MS")
         np.random.seed(789)
         s = pd.Series(np.random.normal(0, 1, len(dates)), index=dates, name="gscpi")
         # Add supply-chain crisis spike 2021-22
@@ -733,7 +744,22 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # 8. SPR stocks change (supply buffer — drawdown = geopolitical response)
     if "spr_stocks" in df.columns:
-        out["spr_change"]            = df["spr_stocks"].diff()    # thousand barrels
+        out["spr_change"]  = df["spr_stocks"].diff()    # thousand barrels/week
+        out["spr_stocks"]  = df["spr_stocks"]           # level — needed by IV module
+
+    # 9. OPEC spare capacity proxy (IV instrument for GIPI)
+    #    Spare cap = rolling 36-month max production − current production
+    #    High spare cap → OPEC can buffer a GPR shock → GIPI stays low
+    #    Predetermined at 6-month lag, exogenous to US IP demand shocks
+    if "opec_production" in df.columns:
+        prod = df["opec_production"].resample("MS").mean()  # ensure monthly
+        rolling_max = prod.rolling(36, min_periods=12).max()
+        spare_cap = rolling_max - prod
+        spare_cap.name = "opec_spare_cap"
+        out["opec_spare_cap"] = spare_cap
+        log.info(f"  OPEC spare cap constructed: "
+                 f"{spare_cap.notna().sum()} obs, "
+                 f"mean={spare_cap.mean():.2f} mb/d")
 
     # ── GIPI: Geopolitical Inflation Pressure Index (PCA composite) ───────────
     # Construct PC1 from available inflation transmission variables.
@@ -765,11 +791,12 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Regime classification from GPR ───────────────────────────────────────
     if "gpr_z" in out.columns:
+        # Use integer codes (0=calm,1=elevated,2=crisis) — Categorical breaks StandardScaler
         out["regime"] = pd.cut(
             out["gpr_z"],
             bins=[-np.inf, 1.5, 2.5, np.inf],
-            labels=["calm", "elevated", "crisis"],
-        )
+            labels=[0, 1, 2],
+        ).astype(float)
 
     return out
 
@@ -851,7 +878,7 @@ class DataPipeline:
 
         raw = raw.sort_index()
         raw = raw[raw.index >= cfg.START_DATE]
-        raw = raw[raw.index <= cfg.END_DATE]
+        raw = raw[raw.index <= pd.Timestamp(_end_date())]
 
         self.raw_ = raw
         raw.to_parquet(self.RAW_FILE)

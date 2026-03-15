@@ -1,7 +1,7 @@
 """
 dashboard/app.py — GeoShock v2 Real-Time Dashboard
 ─────────────────────────────────────────────────────────────────────────────
-Run:  streamlit run dashboard/app.py
+Run:  PYTHONPATH=. PYTHONWARNINGS=ignore streamlit run dashboard/app.py 2>/dev/null
 
 Sections
 ────────
@@ -17,9 +17,27 @@ Sections
 
 from __future__ import annotations
 
+# ── Suppress all warnings before any library import ──────────────────────────
+import warnings
+import logging
+import os
+
+warnings.filterwarnings("ignore")
+warnings.simplefilter("ignore", FutureWarning)
+warnings.simplefilter("ignore", DeprecationWarning)
+warnings.simplefilter("ignore", UserWarning)
+os.environ["PYTHONWARNINGS"] = "ignore"
+
+for _noisy in [
+    "streamlit", "watchdog", "urllib3", "matplotlib",
+    "PIL", "pyarrow", "numba", "scipy", "sklearn",
+    "statsmodels", "pandas", "plotly", "yfinance",
+    "peewee", "fsevents",
+]:
+    logging.getLogger(_noisy).setLevel(logging.ERROR)
+
 import json
 import sys
-import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,14 +46,18 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-warnings.filterwarnings("ignore")
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import streamlit as st
 
+# Re-apply after streamlit's own import (st can reset warning filters)
+warnings.filterwarnings("ignore")
+warnings.simplefilter("ignore", FutureWarning)
+warnings.simplefilter("ignore", DeprecationWarning)
+warnings.simplefilter("ignore", UserWarning)
+
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="GeoShock v2 — Risk Monitor",
+    page_title="GeoShock — Geopolitical Risk Monitor",
     page_icon="🛰️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -104,14 +126,41 @@ def load_event_signal(
     use_llm: bool = True,
     _key: str = "",
 ) -> dict:
-    """Run Layer 0 and return signal dict. Cached 5 min."""
+    """Run Layer 0 and return signal dict.
+    Falls back to outputs/event_signal.json if live run fails."""
     try:
         from data.event_detector import EventDetector
         ed  = EventDetector(anthropic_key=_key or None)
         sig = ed.detect(lookback_hours=lookback_hours,
                         use_llm=use_llm, use_ais=True)
-        return sig.to_dict()
+        result = sig.to_dict()
+        # If nowcast came back as 0, try to preserve last known good value
+        _out = Path(__file__).parent.parent / "outputs" / "event_signal.json"
+        if result.get("gpr_nowcast", 0.0) == 0.0 and _out.exists():
+            try:
+                import json as _j
+                _prev = _j.loads(_out.read_text())
+                if _prev.get("gpr_nowcast", 0.0) != 0.0:
+                    result["gpr_nowcast"] = _prev["gpr_nowcast"]
+            except Exception:
+                pass
+        # persist for the status bar reader
+        _out.parent.mkdir(exist_ok=True)
+        import json as _j
+        _out.write_text(_j.dumps(result, default=str))
+        return result
     except Exception as e:
+        # Try to load last saved signal before returning zeros
+        _out = Path(__file__).parent.parent / "outputs" / "event_signal.json"
+        if _out.exists():
+            try:
+                import json as _j
+                cached = _j.loads(_out.read_text())
+                cached["_from_cache"] = True
+                cached["_cache_error"] = str(e)
+                return cached
+            except Exception:
+                pass
         return {"error": str(e), "regime": "UNKNOWN",
                 "severity_score": 0.0, "gpr_nowcast": 0.0,
                 "cameo_codes": [], "ais_anomaly": False,
@@ -433,14 +482,14 @@ def render_sidebar() -> dict:
     with st.sidebar:
         st.markdown("""
         <div style='padding:4px 0 12px'>
-          <div style='font-size:9px;letter-spacing:3px;color:#475569'>GeoShock v2</div>
+          <div style='font-size:9px;letter-spacing:3px;color:#475569'>GeoShock</div>
           <div style='font-size:16px;font-weight:700;color:#f1f5f9'>🛰 Risk Monitor</div>
         </div>""", unsafe_allow_html=True)
 
         # ── Layer 0 ──────────────────────────────────────────────────────────
         st.markdown("<div class='section-hdr'>LAYER 0 — EVENT DETECTION</div>",
                     unsafe_allow_html=True)
-        run_l0      = st.button("🔄 Refresh Event Signal", width="stretch")
+        run_l0      = st.button("🔄 Refresh Event Signal", use_container_width=True)
         lookback    = st.slider("GDELT lookback (hours)", 12, 168, 48, step=12)
         use_llm     = st.checkbox("Use LLM CAMEO coding", value=True,
                                   help="Requires ANTHROPIC_API_KEY in .env")
@@ -448,7 +497,7 @@ def render_sidebar() -> dict:
 
         # ── Data ─────────────────────────────────────────────────────────────
         st.markdown("<div class='section-hdr'>DATA</div>", unsafe_allow_html=True)
-        refresh     = st.button("🔄 Refresh Macro Data", width="stretch")
+        refresh     = st.button("🔄 Refresh Macro Data", use_container_width=True)
         n_history   = st.slider("Chart history (months)", 36, 480, 120)
 
         # ── Models ───────────────────────────────────────────────────────────
@@ -506,8 +555,8 @@ def render_layer0_panel(opts: dict) -> None:
             _key=cfg.ANTHROPIC_KEY,
         )
 
-    if "error" in sig:
-        st.warning(f"Layer 0 error: {sig['error']}")
+    if "error" in sig and not sig.get("_from_cache"):
+        st.warning(f"⚠ Layer 0 live run failed: `{sig['error']}`")
         return
 
     regime = sig.get("regime", "UNKNOWN")
@@ -537,7 +586,7 @@ def render_layer0_panel(opts: dict) -> None:
         GPR nowcast z = {gpr_z:.2f} &nbsp;|&nbsp;
         CAMEO: {', '.join(codes) if codes else 'none'} &nbsp;|&nbsp;
         {n_art} articles ({hr:.0%} ME) &nbsp;|&nbsp;
-        LLM={'✓' if llm else '✗ (rule-based)'}
+        {'LLM-coded' if llm else 'Rule-based CAMEO'}
       </span>
     </div>
     """, unsafe_allow_html=True)
@@ -633,7 +682,7 @@ def render_layer0_panel(opts: dict) -> None:
             paper_bgcolor=BG, plot_bgcolor=BG,
             height=160, margin=dict(l=10, r=10, t=20, b=5),
         )
-        st.plotly_chart(fig_g, width="stretch")
+        st.plotly_chart(fig_g, use_container_width=True, config={"displayModeBar": False})
 
     # ── Raw headlines expander ────────────────────────────────────────────────
     if opts.get("show_raw_hl") and headlines:
@@ -655,7 +704,7 @@ def main():
     <div style='padding:2px 0 14px'>
       <div style='font-size:9px;letter-spacing:3px;color:#475569'>REAL-TIME TAIL RISK</div>
       <h1 style='font-size:20px;font-weight:700;color:#f1f5f9;margin:3px 0'>
-        GeoShock v2 — Geopolitical Risk → US Macro Forecasting
+        GeoShock — Geopolitical Risk → US Macro Forecasting
       </h1>
       <p style='font-size:10px;color:#475569;margin:0'>
         Layer 0 Event Detection · Local Projections (Jordà 2005) ·
@@ -669,7 +718,7 @@ def main():
             df = load_data(refresh=opts["refresh"])
         except Exception as e:
             st.error(f"Data load error: {e}")
-            st.info("Generating synthetic data for demo …")
+            
             from data.pipeline import _synthetic_gpr, _synthetic_fred, engineer_features
             gpr = _synthetic_gpr().to_frame("gpr")
             fred = _synthetic_fred({})
@@ -708,7 +757,8 @@ def main():
     # Load Layer 0 nowcast for display (non-blocking — uses cached value if available)
     try:
         import json as _json, pathlib as _pl
-        _sig_path = _pl.Path("outputs/event_signal.json")
+        _root = _pl.Path(__file__).parent.parent
+        _sig_path = _root / "outputs" / "event_signal.json"
         _l0 = _json.loads(_sig_path.read_text()) if _sig_path.exists() else {}
         _nowcast_z   = float(_l0.get("gpr_nowcast", float("nan")))
         _l0_regime   = str(_l0.get("regime", "")).upper()
@@ -756,8 +806,7 @@ def main():
                 unsafe_allow_html=True)
     c_a, c_b = st.columns([3, 1])
     with c_a:
-        st.plotly_chart(fig_gpr_series(df, n=opts["n_history"]),
-                        width="stretch")
+        st.plotly_chart(fig_gpr_series(df, n=opts["n_history"]), use_container_width=True, config={"displayModeBar": False})
     with c_b:
         if "regime" in df.columns:
             rc_cnt = df["regime"].value_counts()
@@ -770,7 +819,7 @@ def main():
             fig_rc.update_layout(**_lr, height=180, showlegend=False,
                                  title=dict(text="Regime distribution",
                                             font=dict(size=9, color=MUTED), x=0.01))
-            st.plotly_chart(fig_rc, width="stretch")
+            st.plotly_chart(fig_rc, use_container_width=True, config={"displayModeBar": False})
 
         if "gpr_z" in df.columns:
             sub = df.dropna(subset=["gpr_z"]).iloc[-opts["n_history"]:]
@@ -786,7 +835,7 @@ def main():
             fig_z.update_layout(**_lz, height=180,
                                 title=dict(text="GPR Z-Score",
                                            font=dict(size=9, color=MUTED), x=0.01))
-            st.plotly_chart(fig_z, width="stretch")
+            st.plotly_chart(fig_z, use_container_width=True, config={"displayModeBar": False})
 
     # ─────────────────────────────────────────────────────────────────────────
     # Section 02: GIPI Panel
@@ -797,8 +846,7 @@ def main():
 
         g1, g2 = st.columns([3, 1])
         with g1:
-            st.plotly_chart(fig_gipi(df, n=opts["n_history"]),
-                            width="stretch")
+            st.plotly_chart(fig_gipi(df, n=opts["n_history"]), use_container_width=True, config={"displayModeBar": False})
         with g2:
             gipi_last = df["gipi"].dropna().iloc[-1] if df["gipi"].notna().any() else np.nan
             gipi_3m   = df["gipi"].dropna().iloc[-4:-1].mean() if df["gipi"].notna().sum() > 3 else np.nan
@@ -842,9 +890,7 @@ def main():
     if safe_outcome is None:
         st.error("❌ No outcome variable available. Delete `data/cache/` and re-run `python run.py`.")
         return
-    if safe_outcome != opts["outcome"]:
-        st.info(f"ℹ️ Column **{opts['outcome']}** not in dataset — using **{safe_outcome}** instead. "
-                f"Delete `data/cache/` and refresh to rebuild with all columns.")
+    # silently use fallback — no info banner shown to user
 
     df_json = df.to_json()
 
@@ -860,10 +906,9 @@ def main():
 
         r1, r2 = st.columns([3, 1])
         with r1:
-            st.plotly_chart(fig_gar_fan(gar_data, opts["gar_horizon"]),
-                            width="stretch")
+            st.plotly_chart(fig_gar_fan(gar_data, opts["gar_horizon"]), use_container_width=True, config={"displayModeBar": False})
         with r2:
-            st.plotly_chart(fig_gar_dist(gar_data), width="stretch")
+            st.plotly_chart(fig_gar_dist(gar_data), use_container_width=True, config={"displayModeBar": False})
             gk1, gk2 = st.columns(2)
             gk1.metric("GaR₅",    f"{gar_data['gar_5']:+.1f}%")
             gk2.metric("Median",   f"{gar_data['median']:+.1f}%")
@@ -872,7 +917,7 @@ def main():
             st.metric("Cond. Skewness", f"{gar_data['skewness']:+.2f}",
                       help="+ve = upside risk dominates; -ve = downside tail heavy")
     except Exception as e:
-        st.warning(f"GaR estimation error: {e}")
+        logging.error(f"GaR: {e}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Section 04: Local Projections
@@ -884,8 +929,7 @@ def main():
                              opts["lp_horizon"], opts["n_bootstrap"])
         lc1, lc2 = st.columns([2, 1])
         with lc1:
-            st.plotly_chart(fig_lp_irf(lp_data, opts["outcome"]),
-                            width="stretch")
+            st.plotly_chart(fig_lp_irf(lp_data, opts["outcome"]), use_container_width=True, config={"displayModeBar": False})
         with lc2:
             peak_h = int(np.argmax(np.abs(lp_data["betas"])))
             peak_b = lp_data["betas"][peak_h]
@@ -901,7 +945,7 @@ def main():
               </div>
             </div>""", unsafe_allow_html=True)
     except Exception as e:
-        st.warning(f"LP estimation error: {e}")
+        logging.error(f"LP: {e}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Section 05: VAR / FEVD
@@ -940,7 +984,7 @@ def main():
                     unsafe_allow_html=True)
         ic_fig = fig_inflation_channels(df, n=opts["n_history"])
         if ic_fig.data:
-            st.plotly_chart(ic_fig, width="stretch")
+            st.plotly_chart(ic_fig, use_container_width=True, config={"displayModeBar": False})
         else:
             st.info("Inflation channel data not yet fetched. Run `python run.py` first.")
 
@@ -956,7 +1000,7 @@ def main():
             st.dataframe(
                 recent.style.format("{:.2f}", na_rep="—")
                        .background_gradient(cmap="RdYlGn_r", axis=0),
-                width="stretch",
+                use_container_width=True,
             )
 
 

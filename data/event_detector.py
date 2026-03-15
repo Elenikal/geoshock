@@ -46,14 +46,6 @@ import re
 import json
 import time
 import logging
-import os
-os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-import os
-os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-import os
-os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-import os
-os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -247,7 +239,6 @@ def _safe_get(url: str, params: dict | None = None, timeout: int = 20) -> reques
 
 def fetch_gdelt_articles(lookback_hours: int = 48, max_records: int = 50) -> list[dict]:
     log.info(f"GDELT: querying last {lookback_hours}h ...")
-    time.sleep(6)  # GDELT rate limit: 1 request per 5 seconds
     try:
         r = _safe_get(
             _GDELT_API,
@@ -347,8 +338,17 @@ _LLM_SYSTEM = _LLM_SYSTEM.encode("ascii", "ignore").decode("ascii")
 
 
 def _clean_text(text: str) -> str:
-    """Strip all non-ASCII. Never raises."""
+    """Normalise Unicode and strip non-ASCII. Never raises."""
     import unicodedata
+    _MAP = {
+        "\u2018": "'",  "\u2019": "'",  # curly single quotes
+        "\u201c": '"',  "\u201d": '"',  # curly double quotes
+        "\u2013": "-",   "\u2014": "--",  # en/em dash
+        "\u2026": "...", "\u00b7": ".",   # ellipsis, middle dot
+        "\u2032": "'",  "\u00b4": "'",  # prime, acute
+    }
+    for uni, asc in _MAP.items():
+        text = text.replace(uni, asc)
     text = unicodedata.normalize("NFKD", text)
     return text.encode("ascii", errors="ignore").decode("ascii")
 
@@ -628,7 +628,21 @@ class EventDetector:
 
         # 5. Composite severity + GPR nowcast
         severity = _composite_severity(raw, llm_res, ais)
-        gpr_z    = float(llm_res.get("gpr_z_estimate", severity / 3.33))
+
+        # gpr_z: prefer LLM estimate; fall back to CAMEO-based score
+        if llm_res.get("gpr_z_estimate") is not None:
+            gpr_z = float(llm_res["gpr_z_estimate"])
+        else:
+            # Rule-based: derive z from max CAMEO severity in detected codes
+            detected_codes = llm_res.get("dominant_cameo_codes", [])
+            if detected_codes:
+                max_sev = max(
+                    CAMEO_SEVERITY.get(str(c), 0.0) for c in detected_codes
+                )
+                # map 0-10 CAMEO severity → GPR z-score (calibrated: sev=8 ≈ z=2.5)
+                gpr_z = round(max_sev * 0.35, 2)
+            else:
+                gpr_z = round(severity / 3.33, 2)
 
         if ais and ais.anomaly:
             gpr_z = min(4.0, gpr_z + 0.5)
