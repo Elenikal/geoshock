@@ -1,0 +1,6 @@
+[global]
+suppressDeprecationWarnings = true
+
+[logger]
+level = "error"
+messageFormat = "%(asctime)s %(message)s"

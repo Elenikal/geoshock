@@ -5,6 +5,7 @@
 
 # API keys - never commit
 config.py
+config_template.py
 
 # Large outputs and cache
 outputs/
