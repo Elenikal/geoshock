@@ -122,19 +122,25 @@ def run_local_projections(df: pd.DataFrame) -> dict:
         outcomes = [o for o in ["ip_yoy", "cpi_inflation", "unemp",
                                  "sp500_return", "ip_growth"]
                     if o in df.columns]
-        lp = LocalProjections(
-            df=df, shock_col="gpr_shock", outcome_cols=outcomes,
-            horizons=cfg.LP_HORIZONS, lags=cfg.LP_LAGS,
-            n_bootstrap=cfg.LP_BOOTSTRAP_REPS,
-        )
-        results = lp.fit_all()
-
-        try:
-            cfg.FIGURE_DIR.mkdir(parents=True, exist_ok=True)
-            lp.plot_irf_grid(save_path=str(cfg.FIGURE_DIR / "irf_grid.png"))
-            log.info(f"  IRF grid → {cfg.FIGURE_DIR / 'irf_grid.png'}")
-        except Exception as e:
-            log.warning(f"  IRF plot: {e}")
+        results = {}
+        cfg.FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+        for outcome in outcomes:
+            lp = LocalProjections(
+                df=df,
+                shock="gpr_shock",
+                outcome=outcome,
+                n_lags=cfg.LP_LAGS,
+                horizon=cfg.LP_HORIZONS,
+                bootstrap_reps=cfg.LP_BOOTSTRAP_REPS,
+            )
+            res = lp.fit(regime="full", verbose=True)
+            results[outcome] = res
+            try:
+                lp.plot_irf(
+                    save_path=str(cfg.FIGURE_DIR / f"irf_{outcome}.png"))
+                log.info(f"  IRF → {cfg.FIGURE_DIR / f'irf_{outcome}.png'}")
+            except Exception as e:
+                log.warning(f"  IRF plot {outcome}: {e}")
 
         return {"lp": results}
     except Exception as e:
@@ -189,7 +195,7 @@ def run_growth_at_risk(df: pd.DataFrame, l0_signal: dict | None = None) -> dict:
                         gar.plot_fan_chart(
                             horizon=h,
                             save_path=str(cfg.FIGURE_DIR / f"gar_fan_h{h}.png"))
-                        gar.plot_distribution(
+                        gar.plot_current_distribution(
                             horizon=h,
                             save_path=str(cfg.FIGURE_DIR / f"gar_dist_h{h}.png"))
                     except Exception as e:
@@ -293,22 +299,19 @@ def run_var(df: pd.DataFrame) -> dict:
     log.info("  LAYER 2C — STRUCTURAL VAR + FEVD + GRANGER")
     log.info("━" * 58)
     try:
-        from models.var_model import VARModel
+        from models.var_model import GeoShockVAR, run_granger_battery
         var_vars = [v for v in cfg.VAR_VARIABLES if v in df.columns]
         log.info(f"  VAR variables ({len(var_vars)}): {var_vars}")
 
-        vm = VARModel(df=df, variables=var_vars, lags=cfg.VAR_LAGS)
+        vm = GeoShockVAR(df=df, variables=var_vars, lags=cfg.VAR_LAGS)
         vm.fit()
-        vm.compute_irf()
-        vm.compute_fevd()
-        gc = vm.granger_causality()
+        gc = run_granger_battery(df, cause="gpr_shock")
 
         try:
-            vm.plot_irf(save_path=str(cfg.FIGURE_DIR / "var_irf_grid.png"))
+            vm.plot_irf_grid(save_path=str(cfg.FIGURE_DIR / "var_irf_grid.png"))
             vm.plot_fevd(save_path=str(cfg.FIGURE_DIR / "fevd.png"))
             gc.to_csv(cfg.OUTPUT_DIR / "granger_causality.csv")
-            if hasattr(vm, "fevd_df_"):
-                vm.fevd_df_.to_csv(cfg.OUTPUT_DIR / "fevd.csv")
+            vm.fevd().to_csv(cfg.OUTPUT_DIR / "fevd.csv")
             log.info("  VAR outputs saved")
         except Exception as e:
             log.warning(f"  VAR outputs: {e}")

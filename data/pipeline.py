@@ -215,10 +215,10 @@ FRED_INFLATION_CHANNELS = {
     "PFOODINDEXM":       "global_food_idx",   # IMF Global Price of Food Index
     "CUSR0000SAF11":     "cpi_food_home",     # CPI Food at Home (SA)
     # Strategic Petroleum Reserve (supply buffer signal)
-    "WCSSTUS1":          "spr_stocks",        # US SPR Weekly Stocks (thousand barrels)
+    "WCSSTUS":           "spr_stocks",        # US SPR Weekly Stocks (thousand barrels)
     # OPEC crude oil production (EIA/STEO via FRED)
     # Spare capacity proxy = 36-month rolling max minus current production
-    "WTOTQTW":           "opec_production",   # OPEC Crude Oil Production (mb/d)
+    "PAPR_OPEC":         "opec_production",   # EIA STEO OPEC Crude Production (mb/d)
     # USD index (pass-through amplifier)
     "DTWEXBGS":          "usd_index",         # Nominal Broad USD Index
 }
@@ -521,29 +521,77 @@ def _synthetic_yahoo(tickers: dict) -> pd.DataFrame:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def fetch_gscpi() -> pd.Series:
-    """Fetch NY Fed Global Supply Chain Pressure Index (starts 1998)."""
+    """
+    Fetch NY Fed Global Supply Chain Pressure Index (starts 1998).
+
+    Priority order:
+      1. Local cache file  data/cache/gscpi_data.xls  (hand-downloaded from NY Fed)
+      2. Live NY Fed URL   (CSV format, current as of 2025)
+      3. Synthetic fallback
+    """
     log.info("Fetching GSCPI from NY Fed …")
-    try:
-        resp = requests.get(GSCPI_URL, timeout=30)
-        resp.raise_for_status()
-        df = pd.read_excel(io.BytesIO(resp.content), skiprows=1, engine="openpyxl")
-        # Columns: Date, GSCPI
+
+    def _parse_gscpi_df(df: pd.DataFrame) -> pd.Series:
         df.columns = [str(c).strip() for c in df.columns]
         date_col = df.columns[0]
-        val_col = df.columns[1]
+        val_col  = df.columns[1]
         df[date_col] = pd.to_datetime(df[date_col])
         s = df.set_index(date_col)[val_col].resample("MS").last()
         s.name = "gscpi"
-        log.info(f"  GSCPI: {len(s)} obs ({s.index[0].date()} → {s.index[-1].date()})")
         return s
-    except Exception as e:
-        log.warning(f"  GSCPI fetch failed ({e}) — generating synthetic.")
-        dates = pd.date_range("1998-01-01", _end_date(), freq="MS")
-        np.random.seed(789)
-        s = pd.Series(np.random.normal(0, 1, len(dates)), index=dates, name="gscpi")
-        # Add supply-chain crisis spike 2021-22
-        s["2021-06":"2022-03"] += 3.0
-        return s
+
+    # ── 1. Local file (most reliable) ────────────────────────────────────────
+    local_paths = [
+        Path("data/cache/gscpi_data.xls"),
+        Path("data/cache/gscpi_data.xlsx"),
+        Path("data/cache/gscpi_data.csv"),
+    ]
+    for local in local_paths:
+        if local.exists():
+            try:
+                if local.suffix == ".csv":
+                    df = pd.read_csv(local)
+                elif local.suffix == ".xls":
+                    df = pd.read_excel(local, engine="xlrd")
+                else:
+                    df = pd.read_excel(local, engine="openpyxl")
+                s = _parse_gscpi_df(df)
+                log.info(f"  GSCPI (local {local.name}): {len(s)} obs "
+                         f"({s.index[0].date()} → {s.index[-1].date()})")
+                return s
+            except Exception as e:
+                log.warning(f"  GSCPI local read failed ({e}) — trying URL …")
+
+    # ── 2. Live URL (CSV, current NY Fed format) ──────────────────────────────
+    for url in [
+        "https://www.newyorkfed.org/medialibrary/media/research/gscpi/downloads/gscpi_data.csv",
+        "https://www.newyorkfed.org/medialibrary/media/research/gscpi/downloads/GSCPI_data.xlsx",
+    ]:
+        try:
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+            if b"<!DOCTYPE" in resp.content[:200]:
+                continue   # HTML error page
+            if url.endswith(".csv"):
+                df = pd.read_csv(io.StringIO(resp.content.decode("utf-8")))
+            else:
+                df = pd.read_excel(io.BytesIO(resp.content), engine="openpyxl")
+            s = _parse_gscpi_df(df)
+            log.info(f"  GSCPI (URL): {len(s)} obs "
+                     f"({s.index[0].date()} → {s.index[-1].date()})")
+            # Save to cache for next run
+            s.to_csv("data/cache/gscpi_data.csv", header=True)
+            return s
+        except Exception as e:
+            log.debug(f"  GSCPI URL {url} failed: {e}")
+
+    # ── 3. Synthetic fallback ─────────────────────────────────────────────────
+    log.warning("  GSCPI fetch failed — generating synthetic (results unreliable).")
+    dates = pd.date_range("1998-01-01", _end_date(), freq="MS")
+    np.random.seed(789)
+    s = pd.Series(np.random.normal(0, 1, len(dates)), index=dates, name="gscpi")
+    s["2021-06":"2022-03"] += 3.0
+    return s
 
 
 
@@ -762,16 +810,18 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
                  f"mean={spare_cap.mean():.2f} mb/d")
 
     # ── GIPI: Geopolitical Inflation Pressure Index (PCA composite) ───────────
-    # Construct PC1 from available inflation transmission variables.
-    # Uses whatever columns ARE present — degrades gracefully to fewer inputs.
-    _gipi_candidates = [
-        "gscpi", "import_price_yoy", "global_energy_yoy",
-        "global_food_yoy", "d_breakeven_5y",
-        # fallbacks if primary series failed to download
-        "oil_yoy", "cpi_energy_yoy", "fao_food_yoy",
+    # Canonical 5-series specification (Section 3.2 of paper).
+    # Do NOT add fallback series — they change the PCA loadings and shift the
+    # index value, breaking comparability with paper results (GIPI=-0.32 Mar 2026).
+    _GIPI_CANONICAL = [
+        "gscpi",              # NY Fed Global Supply Chain Pressure Index
+        "import_price_yoy",   # Import Price Index YoY
+        "global_energy_yoy",  # IMF Global Energy Price YoY
+        "global_food_yoy",    # IMF Global Food Price YoY
+        "d_breakeven_5y",     # Delta 5Y TIPS Breakeven
     ]
     gipi_inputs = {}
-    for col in _gipi_candidates:
+    for col in _GIPI_CANONICAL:
         if col in out.columns and out[col].notna().sum() >= 12:
             gipi_inputs[col] = out[col]
 
