@@ -757,7 +757,11 @@ def main():
     # ── Top KPI row ───────────────────────────────────────────────────────────
     gpr_v  = latest.get("gpr_level", np.nan)
     gpr_z  = latest.get("gpr_z", np.nan)
-    regime = str(latest.get("regime", "N/A"))
+    _regime_raw = latest.get("regime", np.nan)
+    _REGIME_MAP = {0: "calm", 0.0: "calm", 1: "elevated", 1.0: "elevated",
+                   2: "crisis", 2.0: "crisis", "calm": "calm",
+                   "elevated": "elevated", "crisis": "crisis"}
+    regime = _REGIME_MAP.get(_regime_raw, str(_regime_raw) if not (isinstance(_regime_raw, float) and np.isnan(_regime_raw)) else "N/A")
     rc     = REGIME_COLOR.get(regime, AMBER)
 
     c1,c2,c3,c4,c5,c6,c7 = st.columns(7)
@@ -769,7 +773,7 @@ def main():
               f"{latest.get('vix_change',np.nan):+.1f}" if 'vix_change' in latest.index else None)
     c5.metric("WTI",    f"${latest.get('oil_price',np.nan):.0f}" if 'oil_price' in latest.index else "N/A",
               f"{latest.get('oil_return',np.nan):+.1f}% MoM" if 'oil_return' in latest.index else None)
-    c6.metric("HY Spread", f"{latest.get('hy_spread',np.nan):.0f}bps" if 'hy_spread' in latest.index else "N/A")
+    c6.metric("HY Spread", f"{latest.get('hy_spread',np.nan) * 100:.0f}bps" if 'hy_spread' in latest.index else "N/A")
 
     gipi_v = latest.get("gipi", np.nan)
     c7.metric("GIPI", f"{gipi_v:.2f}" if not np.isnan(gipi_v) else "N/A",
