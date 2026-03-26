@@ -579,7 +579,9 @@ def _composite_severity(
 
     ais_sev = 0.0
     if ais:
-        ais_sev = min(10.0, (abs(ais.tanker_z) + max(0, ais.brent_wti_z)) * 2.0)
+        ais_sev = min(10.0, (abs(ais.tanker_z) + max(0, ais.freight_z) + max(0, ais.brent_wti_z)) * 1.5)
+        if ais.anomaly:
+            ais_sev = max(ais_sev, 6.0)  # floor at 6 if anomaly confirmed
 
     return round(min(10.0, max(0.0, 0.50*llm_sev + 0.30*art_sev + 0.20*ais_sev)), 2)
 
@@ -653,6 +655,17 @@ class EventDetector:
                    z_threshold=ais_z_threshold,
                    tickers=ais_tickers)
                if use_ais else None)
+
+        # 4b. Headline-based Hormuz override — if news confirms blockade/closure
+        #     but market data lags, force AIS anomaly from headline evidence
+        _hormuz_keywords = {"hormuz", "strait closed", "blockade", "shipping closed",
+                            "strait of hormuz", "hormuz closed", "hormuz blockade"}
+        _headline_text = " ".join(all_h).lower()
+        _hormuz_in_news = any(kw in _headline_text for kw in _hormuz_keywords)
+        _blockade_cameo = any(str(c).startswith("19") for c in llm_res.get("dominant_cameo_codes", []))
+        if _hormuz_in_news and _blockade_cameo and ais and not ais.anomaly:
+            log.info("  ⚠ Hormuz headline override: news confirms blockade but market proxy lagging")
+            ais.anomaly = True
 
         # 5. Composite severity + GPR nowcast
         severity = _composite_severity(raw, llm_res, ais)
