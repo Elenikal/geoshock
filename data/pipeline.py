@@ -240,6 +240,7 @@ FRED_CORE = {
     "GEPUCURRENT":       "gpr_fred",     # backup GPR
     "WTISPLC":           "wti_spot",
     "IPG211111CS":       "ip_oil",
+    "VIXCLS":            "vix_fred",    # VIX from FRED (fallback for Yahoo)
 }
 
 # ── NEW: Inflation transmission channel series ────────────────────────────────
@@ -764,10 +765,12 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         out["d_fedfunds"] = df["fedfunds"].diff()
 
     # ── VIX ───────────────────────────────────────────────────────────────────
-    if "vix" in df.columns:
-        out["vix"] = df["vix"]
-        out["vix_change"] = df["vix"].diff()
-        out["vix_log"] = np.log(df["vix"])
+    _vix_col = "vix" if "vix" in df.columns and df["vix"].notna().sum() > 12 else \
+               "vix_fred" if "vix_fred" in df.columns else None
+    if _vix_col:
+        out["vix"] = df[_vix_col]
+        out["vix_change"] = df[_vix_col].diff()
+        out["vix_log"] = np.log(df[_vix_col].clip(lower=1))
 
     # ── S&P 500 ───────────────────────────────────────────────────────────────
     if "sp500" in df.columns:
