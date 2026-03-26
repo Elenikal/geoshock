@@ -61,25 +61,62 @@ except ImportError:
     YF_AVAILABLE = False
     log.warning("yfinance not installed — install with: pip install yfinance")
 
+import sys
+_proj_root = str(Path(__file__).resolve().parent.parent)
+if _proj_root not in sys.path:
+    sys.path.insert(0, _proj_root)
+
+# Also try adding the Render source path explicitly
+for _candidate in [_proj_root, "/opt/render/project/src"]:
+    if _candidate not in sys.path:
+        sys.path.insert(0, _candidate)
+
 try:
-    import sys
-    _proj_root = str(Path(__file__).resolve().parent.parent)
-    if _proj_root not in sys.path:
-        sys.path.insert(0, _proj_root)
     from config import cfg
-    log.info(f"[DEBUG] config.py loaded OK — FRED_KEY len={len(cfg.FRED_KEY)}, "
-             f"FRED_CORE keys={len(getattr(cfg, 'FRED_CORE', {}))}")
+    log.info(f"[DEBUG] config.py loaded OK — FRED_KEY len={len(cfg.FRED_KEY)}")
 except Exception as _cfg_err:
-    log.error(f"[DEBUG] config.py import FAILED: {_cfg_err}")
-    class cfg:
-        FRED_KEY = os.getenv("FRED_API_KEY", "")
-        START_DATE = "1985-01-01"
-        END_DATE = "2025-12-31"
-        DATA_DIR = Path("data/cache")
-        FRED_SERIES = {}
-        FRED_CORE = {}
-        FRED_INFLATION = {}
-        YF_TICKERS = {}
+    log.error(f"[DEBUG] config.py import FAILED: {_cfg_err} | sys.path={sys.path[:5]}")
+    # Inline fallback with full config so pipeline works without config.py
+    from dataclasses import dataclass, field as _field
+    @dataclass
+    class _FallbackCfg:
+        FRED_KEY:      str  = os.getenv("FRED_API_KEY", "")
+        ANTHROPIC_KEY: str  = os.getenv("ANTHROPIC_API_KEY", "")
+        START_DATE:    str  = "1985-01-01"
+        END_DATE:      str  = "2025-12-31"
+        DATA_DIR:      Path = Path(_proj_root) / "data" / "cache"
+        OUTPUT_DIR:    Path = Path(_proj_root) / "outputs"
+        FIGURE_DIR:    Path = Path(_proj_root) / "outputs" / "figures"
+        FRED_CORE: dict = _field(default_factory=lambda: {
+            "INDPRO": "ip", "UNRATE": "unemp", "CPIAUCSL": "cpi",
+            "CPILFESL": "core_cpi", "PCEPI": "pce",
+            "A191RL1Q225SBEA": "gdp_growth", "GDPC1": "gdp_level",
+            "BAMLH0A0HYM2": "hy_spread", "T10Y2Y": "term_spread",
+            "GS10": "gs10", "FEDFUNDS": "fedfunds",
+            "DCOILWTICO": "wti", "UMCSENT": "umcsent",
+        })
+        FRED_INFLATION: dict = _field(default_factory=lambda: {
+            "T5YIE": "breakeven_5y", "T10YIE": "breakeven_10y",
+            "IR": "import_price_all", "IREXFUELS": "import_price_xfuel",
+            "IR10": "import_price_fuel", "MHHNGSP": "henry_hub",
+            "PNRGINDEXM": "global_energy_idx", "CPIENGSL": "cpi_energy",
+            "PPIDES": "ppi_energy", "PFOODINDEXM": "global_food_idx",
+            "CUSR0000SAF11": "cpi_food_home", "WCSSTUS1": "spr_stocks",
+            "DTWEXBGS": "usd_index",
+        })
+        YF_TICKERS: dict = _field(default_factory=lambda: {
+            "^VIX": "vix", "^GSPC": "sp500", "ITA": "defense_etf",
+            "XLE": "energy_etf", "GLD": "gold_etf", "TLT": "tlt",
+        })
+        REGIME_ELEVATED: float = 1.5
+        REGIME_CRISIS:   float = 2.5
+        GIPI_COMPONENTS: list = _field(default_factory=lambda: [
+            "gscpi", "import_price_yoy", "global_energy_yoy",
+            "global_food_yoy", "d_breakeven_5y",
+        ])
+    cfg = _FallbackCfg()
+    cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    log.info(f"[DEBUG] Using fallback config — FRED_KEY len={len(cfg.FRED_KEY)}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
