@@ -62,7 +62,9 @@ except ImportError:
 
 try:
     import sys
-    sys.path.insert(0, str(Path(__file__).parent.parent))
+    _proj_root = str(Path(__file__).resolve().parent.parent)
+    if _proj_root not in sys.path:
+        sys.path.insert(0, _proj_root)
     from config import cfg
 except Exception:
     class cfg:
