@@ -713,17 +713,18 @@ def main():
     </div>""", unsafe_allow_html=True)
 
     # ── Load macro data ───────────────────────────────────────────────────────
-    with st.spinner("Loading macro dataset …"):
+    with st.status("Loading macro dataset …", expanded=False) as data_status:
         try:
             df = load_data(refresh=opts["refresh"])
+            data_status.update(label="Macro data loaded", state="complete")
         except Exception as e:
             st.error(f"Data load error: {e}")
-            
             from data.pipeline import _synthetic_gpr, _synthetic_fred, engineer_features
             gpr = _synthetic_gpr().to_frame("gpr")
             fred = _synthetic_fred({})
             raw  = gpr.join(fred, how="outer")
             df   = engineer_features(raw)
+            data_status.update(label="Macro data loaded (synthetic fallback)", state="complete")
 
     if df is None or df.empty:
         st.error("No data available.")
@@ -797,88 +798,90 @@ def main():
     # ─────────────────────────────────────────────────────────────────────────
     if opts.get("run_l0", False):
         load_event_signal.clear()
-    render_layer0_panel(opts)
+
+    with st.status("00 — Loading Layer 0: Event Detection …", expanded=True) as s00:
+        render_layer0_panel(opts)
+        s00.update(label="00 — Layer 0: Event Detection  ✓", state="complete", expanded=True)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Section 01: GPR Monitor
     # ─────────────────────────────────────────────────────────────────────────
-    st.markdown("<div class='section-hdr'>01 — GPR MONITOR</div>",
-                unsafe_allow_html=True)
-    c_a, c_b = st.columns([3, 1])
-    with c_a:
-        st.plotly_chart(fig_gpr_series(df, n=opts["n_history"]), use_container_width=True, config={"displayModeBar": False})
-    with c_b:
-        if "regime" in df.columns:
-            rc_cnt = df["regime"].value_counts()
-            fig_rc = go.Figure(go.Bar(
-                x=rc_cnt.index.tolist(), y=rc_cnt.values,
-                marker_color=[REGIME_COLOR.get(r, AMBER) for r in rc_cnt.index],
-                opacity=0.8,
-            ))
-            _lr = {**BASE_LAYOUT, "margin": dict(l=36, r=8, t=28, b=28)}
-            fig_rc.update_layout(**_lr, height=180, showlegend=False,
-                                 title=dict(text="Regime distribution",
-                                            font=dict(size=9, color=MUTED), x=0.01))
-            st.plotly_chart(fig_rc, use_container_width=True, config={"displayModeBar": False})
+    with st.status("01 — Loading GPR Monitor …", expanded=True) as s01:
+        c_a, c_b = st.columns([3, 1])
+        with c_a:
+            st.plotly_chart(fig_gpr_series(df, n=opts["n_history"]), use_container_width=True, config={"displayModeBar": False})
+        with c_b:
+            if "regime" in df.columns:
+                rc_cnt = df["regime"].value_counts()
+                fig_rc = go.Figure(go.Bar(
+                    x=rc_cnt.index.tolist(), y=rc_cnt.values,
+                    marker_color=[REGIME_COLOR.get(r, AMBER) for r in rc_cnt.index],
+                    opacity=0.8,
+                ))
+                _lr = {**BASE_LAYOUT, "margin": dict(l=36, r=8, t=28, b=28)}
+                fig_rc.update_layout(**_lr, height=180, showlegend=False,
+                                     title=dict(text="Regime distribution",
+                                                font=dict(size=9, color=MUTED), x=0.01))
+                st.plotly_chart(fig_rc, use_container_width=True, config={"displayModeBar": False})
 
-        if "gpr_z" in df.columns:
-            sub = df.dropna(subset=["gpr_z"]).iloc[-opts["n_history"]:]
-            fig_z = go.Figure(go.Scatter(
-                x=sub.index, y=sub["gpr_z"],
-                line=dict(color=BLUE, width=1.5), fill="tozeroy",
-                fillcolor="rgba(59,130,246,0.08)",
-                hovertemplate="%{x|%b %Y}: z=%{y:.2f}<extra></extra>",
-            ))
-            fig_z.add_hline(y=1.5, line=dict(color=AMBER, width=0.8, dash="dash"))
-            fig_z.add_hline(y=2.5, line=dict(color=RED,   width=0.8, dash="dash"))
-            _lz = {**BASE_LAYOUT, "margin": dict(l=36, r=8, t=28, b=28)}
-            fig_z.update_layout(**_lz, height=180,
-                                title=dict(text="GPR Z-Score",
-                                           font=dict(size=9, color=MUTED), x=0.01))
-            st.plotly_chart(fig_z, use_container_width=True, config={"displayModeBar": False})
+            if "gpr_z" in df.columns:
+                sub = df.dropna(subset=["gpr_z"]).iloc[-opts["n_history"]:]
+                fig_z = go.Figure(go.Scatter(
+                    x=sub.index, y=sub["gpr_z"],
+                    line=dict(color=BLUE, width=1.5), fill="tozeroy",
+                    fillcolor="rgba(59,130,246,0.08)",
+                    hovertemplate="%{x|%b %Y}: z=%{y:.2f}<extra></extra>",
+                ))
+                fig_z.add_hline(y=1.5, line=dict(color=AMBER, width=0.8, dash="dash"))
+                fig_z.add_hline(y=2.5, line=dict(color=RED,   width=0.8, dash="dash"))
+                _lz = {**BASE_LAYOUT, "margin": dict(l=36, r=8, t=28, b=28)}
+                fig_z.update_layout(**_lz, height=180,
+                                    title=dict(text="GPR Z-Score",
+                                               font=dict(size=9, color=MUTED), x=0.01))
+                st.plotly_chart(fig_z, use_container_width=True, config={"displayModeBar": False})
+        s01.update(label="01 — GPR Monitor  ✓", state="complete", expanded=True)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Section 02: GIPI Panel
     # ─────────────────────────────────────────────────────────────────────────
     if opts.get("show_gipi") and "gipi" in df.columns:
-        st.markdown("<div class='section-hdr'>02 — GIPI: GEOPOLITICAL INFLATION PRESSURE INDEX</div>",
-                    unsafe_allow_html=True)
-
-        g1, g2 = st.columns([3, 1])
-        with g1:
-            st.plotly_chart(fig_gipi(df, n=opts["n_history"]), use_container_width=True, config={"displayModeBar": False})
-        with g2:
-            gipi_last = df["gipi"].dropna().iloc[-1] if df["gipi"].notna().any() else np.nan
-            gipi_3m   = df["gipi"].dropna().iloc[-4:-1].mean() if df["gipi"].notna().sum() > 3 else np.nan
-            gipi_rg   = ("CRISIS" if gipi_last >= 2.5
-                         else "ELEVATED" if gipi_last >= 1.5 else "CALM")
-            gcol          = REGIME_COLOR.get(gipi_rg, MUTED)
-            gipi_last_str = f"{gipi_last:.2f}" if not np.isnan(gipi_last) else "N/A"
-            gipi_3m_str   = f"{gipi_3m:.2f}"   if not np.isnan(gipi_3m)   else "N/A"
-            st.markdown(f"""
-            <div style='background:#0c1122;border:1px solid #1e2d4a;
-                        border-left:4px solid {gcol};border-radius:6px;
-                        padding:14px;margin-top:8px'>
-              <div style='color:{MUTED};font-size:9px'>GIPI NOW</div>
-              <div style='color:{gcol};font-size:26px;font-weight:700'>
-                {gipi_last_str}</div>
-              <div style='color:{MUTED};font-size:10px;margin-top:4px'>
-                3-month avg: {gipi_3m_str}<br>
-                Regime: <b style='color:{gcol}'>{gipi_rg}</b>
-              </div>
-            </div>
-            <div style='background:#0c1122;border:1px solid #1e2d4a;
-                        border-radius:6px;padding:12px;margin-top:8px;
-                        font-size:9px;color:{MUTED}'>
-              <b style='color:{TEXT}'>GIPI = PC1 of:</b><br>
-              · NY Fed GSCPI<br>
-              · Import Price YoY<br>
-              · Global Energy Price YoY<br>
-              · Global Food Price YoY<br>
-              · ΔBreakeven 5Y<br><br>
-              Higher GIPI = more geopolitical<br>inflation transmission pressure.
-            </div>
-            """, unsafe_allow_html=True)
+        with st.status("02 — Loading GIPI Panel …", expanded=True) as s02:
+            g1, g2 = st.columns([3, 1])
+            with g1:
+                st.plotly_chart(fig_gipi(df, n=opts["n_history"]), use_container_width=True, config={"displayModeBar": False})
+            with g2:
+                gipi_last = df["gipi"].dropna().iloc[-1] if df["gipi"].notna().any() else np.nan
+                gipi_3m   = df["gipi"].dropna().iloc[-4:-1].mean() if df["gipi"].notna().sum() > 3 else np.nan
+                gipi_rg   = ("CRISIS" if gipi_last >= 2.5
+                             else "ELEVATED" if gipi_last >= 1.5 else "CALM")
+                gcol          = REGIME_COLOR.get(gipi_rg, MUTED)
+                gipi_last_str = f"{gipi_last:.2f}" if not np.isnan(gipi_last) else "N/A"
+                gipi_3m_str   = f"{gipi_3m:.2f}"   if not np.isnan(gipi_3m)   else "N/A"
+                st.markdown(f"""
+                <div style='background:#0c1122;border:1px solid #1e2d4a;
+                            border-left:4px solid {gcol};border-radius:6px;
+                            padding:14px;margin-top:8px'>
+                  <div style='color:{MUTED};font-size:9px'>GIPI NOW</div>
+                  <div style='color:{gcol};font-size:26px;font-weight:700'>
+                    {gipi_last_str}</div>
+                  <div style='color:{MUTED};font-size:10px;margin-top:4px'>
+                    3-month avg: {gipi_3m_str}<br>
+                    Regime: <b style='color:{gcol}'>{gipi_rg}</b>
+                  </div>
+                </div>
+                <div style='background:#0c1122;border:1px solid #1e2d4a;
+                            border-radius:6px;padding:12px;margin-top:8px;
+                            font-size:9px;color:{MUTED}'>
+                  <b style='color:{TEXT}'>GIPI = PC1 of:</b><br>
+                  · NY Fed GSCPI<br>
+                  · Import Price YoY<br>
+                  · Global Energy Price YoY<br>
+                  · Global Food Price YoY<br>
+                  · ΔBreakeven 5Y<br><br>
+                  Higher GIPI = more geopolitical<br>inflation transmission pressure.
+                </div>
+                """, unsafe_allow_html=True)
+            s02.update(label="02 — GIPI Panel  ✓", state="complete", expanded=True)
 
     # ── Resolve outcome — use fallback if selected column missing from df ─────
     _pref = [opts["outcome"], "ip_yoy", "ip_growth", "cpi_inflation",
@@ -897,111 +900,112 @@ def main():
     # ─────────────────────────────────────────────────────────────────────────
     # Section 03: Growth-at-Risk
     # ─────────────────────────────────────────────────────────────────────────
-    st.markdown("<div class='section-hdr'>03 — GROWTH-AT-RISK</div>",
-                unsafe_allow_html=True)
+    with st.status("03 — Estimating Growth-at-Risk …", expanded=True) as s03:
+        try:
+            gar_data = compute_gar(df_json, safe_outcome,
+                                   opts["gar_horizon"], opts["use_gipi"])
 
-    try:
-        gar_data = compute_gar(df_json, safe_outcome,
-                               opts["gar_horizon"], opts["use_gipi"])
-
-        r1, r2 = st.columns([3, 1])
-        with r1:
-            st.plotly_chart(fig_gar_fan(gar_data, opts["gar_horizon"]), use_container_width=True, config={"displayModeBar": False})
-        with r2:
-            st.plotly_chart(fig_gar_dist(gar_data), use_container_width=True, config={"displayModeBar": False})
-            gk1, gk2 = st.columns(2)
-            gk1.metric("GaR₅",    f"{gar_data['gar_5']:+.1f}%")
-            gk2.metric("Median",   f"{gar_data['median']:+.1f}%")
-            gk1.metric("P(neg)",   f"{gar_data['prob_neg']:.1%}")
-            gk2.metric("P(rec<-2%)",f"{gar_data['prob_rec']:.1%}")
-            st.metric("Cond. Skewness", f"{gar_data['skewness']:+.2f}",
-                      help="+ve = upside risk dominates; -ve = downside tail heavy")
-    except Exception as e:
-        logging.error(f"GaR: {e}")
+            r1, r2 = st.columns([3, 1])
+            with r1:
+                st.plotly_chart(fig_gar_fan(gar_data, opts["gar_horizon"]), use_container_width=True, config={"displayModeBar": False})
+            with r2:
+                st.plotly_chart(fig_gar_dist(gar_data), use_container_width=True, config={"displayModeBar": False})
+                gk1, gk2 = st.columns(2)
+                gk1.metric("GaR₅",    f"{gar_data['gar_5']:+.1f}%")
+                gk2.metric("Median",   f"{gar_data['median']:+.1f}%")
+                gk1.metric("P(neg)",   f"{gar_data['prob_neg']:.1%}")
+                gk2.metric("P(rec<-2%)",f"{gar_data['prob_rec']:.1%}")
+                st.metric("Cond. Skewness", f"{gar_data['skewness']:+.2f}",
+                          help="+ve = upside risk dominates; -ve = downside tail heavy")
+            s03.update(label="03 — Growth-at-Risk  ✓", state="complete", expanded=True)
+        except Exception as e:
+            logging.error(f"GaR: {e}")
+            s03.update(label="03 — Growth-at-Risk  ✗", state="error", expanded=False)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Section 04: Local Projections
     # ─────────────────────────────────────────────────────────────────────────
-    st.markdown("<div class='section-hdr'>04 — LOCAL PROJECTIONS (LP-IRF)</div>",
-                unsafe_allow_html=True)
-    try:
-        lp_data = compute_lp(df_json, safe_outcome, "gpr_shock",
-                             opts["lp_horizon"], opts["n_bootstrap"])
-        lc1, lc2 = st.columns([2, 1])
-        with lc1:
-            st.plotly_chart(fig_lp_irf(lp_data, opts["outcome"]), use_container_width=True, config={"displayModeBar": False})
-        with lc2:
-            peak_h = int(np.argmax(np.abs(lp_data["betas"])))
-            peak_b = lp_data["betas"][peak_h]
-            st.markdown(f"""
-            <div style='background:#0c1122;border:1px solid #1e2d4a;
-                        border-radius:6px;padding:14px;margin-top:8px'>
-              <div style='color:{MUTED};font-size:9px'>LP SUMMARY</div>
-              <div style='font-size:11px;color:{TEXT};margin-top:8px'>
-                Peak response at h={lp_data['horizons'][peak_h]}<br>
-                Peak β = {peak_b:.3f}<br>
-                Horizon = {opts['lp_horizon']} months<br>
-                Bootstrap reps = {opts['n_bootstrap']}
-              </div>
-            </div>""", unsafe_allow_html=True)
-    except Exception as e:
-        logging.error(f"LP: {e}")
+    with st.status("04 — Estimating Local Projections …", expanded=True) as s04:
+        try:
+            lp_data = compute_lp(df_json, safe_outcome, "gpr_shock",
+                                 opts["lp_horizon"], opts["n_bootstrap"])
+            lc1, lc2 = st.columns([2, 1])
+            with lc1:
+                st.plotly_chart(fig_lp_irf(lp_data, opts["outcome"]), use_container_width=True, config={"displayModeBar": False})
+            with lc2:
+                peak_h = int(np.argmax(np.abs(lp_data["betas"])))
+                peak_b = lp_data["betas"][peak_h]
+                st.markdown(f"""
+                <div style='background:#0c1122;border:1px solid #1e2d4a;
+                            border-radius:6px;padding:14px;margin-top:8px'>
+                  <div style='color:{MUTED};font-size:9px'>LP SUMMARY</div>
+                  <div style='font-size:11px;color:{TEXT};margin-top:8px'>
+                    Peak response at h={lp_data['horizons'][peak_h]}<br>
+                    Peak β = {peak_b:.3f}<br>
+                    Horizon = {opts['lp_horizon']} months<br>
+                    Bootstrap reps = {opts['n_bootstrap']}
+                  </div>
+                </div>""", unsafe_allow_html=True)
+            s04.update(label="04 — Local Projections  ✓", state="complete", expanded=True)
+        except Exception as e:
+            logging.error(f"LP: {e}")
+            s04.update(label="04 — Local Projections  ✗", state="error", expanded=False)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Section 05: VAR / FEVD
     # ─────────────────────────────────────────────────────────────────────────
     if opts.get("show_var"):
-        st.markdown("<div class='section-hdr'>05 — VAR / FEVD / GRANGER</div>",
-                    unsafe_allow_html=True)
+        with st.status("05 — Loading VAR / FEVD …", expanded=True) as s05:
+            fevd_path    = Path(__file__).parent.parent / "outputs" / "fevd.png"
+            granger_path = Path(__file__).parent.parent / "outputs" / "granger_causality.csv"
 
-        fevd_path    = Path(__file__).parent.parent / "outputs" / "fevd.png"
-        granger_path = Path(__file__).parent.parent / "outputs" / "granger_causality.csv"
-
-        if fevd_path.exists():
-            vc1, vc2 = st.columns([2, 1])
-            with vc1:
-                st.image(str(fevd_path), caption="FEVD — GPR share of forecast error variance")
-            with vc2:
-                if opts.get("show_granger") and granger_path.exists():
-                    gc = pd.read_csv(granger_path)
-                    st.markdown("**Granger causality: GPR → X**")
-                    for _, row in gc.iterrows():
-                        pval = row.get("p_value", row.get("pvalue", np.nan))
-                        sig  = "***" if pval < 0.01 else "**" if pval < 0.05 else "*" if pval < 0.1 else ""
-                        col  = RED if pval < 0.05 else TEXT
-                        st.markdown(
-                            f"<div style='font-size:10px;color:{col}'>"
-                            f"{row.get('variable','')}: p={pval:.3f} {sig}</div>",
-                            unsafe_allow_html=True)
-        else:
-            st.info("Run `python run.py` first to generate VAR outputs.")
+            if fevd_path.exists():
+                vc1, vc2 = st.columns([2, 1])
+                with vc1:
+                    st.image(str(fevd_path), caption="FEVD — GPR share of forecast error variance")
+                with vc2:
+                    if opts.get("show_granger") and granger_path.exists():
+                        gc = pd.read_csv(granger_path)
+                        st.markdown("**Granger causality: GPR → X**")
+                        for _, row in gc.iterrows():
+                            pval = row.get("p_value", row.get("pvalue", np.nan))
+                            sig  = "***" if pval < 0.01 else "**" if pval < 0.05 else "*" if pval < 0.1 else ""
+                            col  = RED if pval < 0.05 else TEXT
+                            st.markdown(
+                                f"<div style='font-size:10px;color:{col}'>"
+                                f"{row.get('variable','')}: p={pval:.3f} {sig}</div>",
+                                unsafe_allow_html=True)
+                s05.update(label="05 — VAR / FEVD  ✓", state="complete", expanded=True)
+            else:
+                st.info("Run `python run.py` first to generate VAR outputs.")
+                s05.update(label="05 — VAR / FEVD (no data)", state="complete", expanded=False)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Section 06: Inflation Channels
     # ─────────────────────────────────────────────────────────────────────────
     if opts.get("show_inf"):
-        st.markdown("<div class='section-hdr'>06 — INFLATION TRANSMISSION CHANNELS</div>",
-                    unsafe_allow_html=True)
-        ic_fig = fig_inflation_channels(df, n=opts["n_history"])
-        if ic_fig.data:
-            st.plotly_chart(ic_fig, use_container_width=True, config={"displayModeBar": False})
-        else:
-            st.info("Inflation channel data not yet fetched. Run `python run.py` first.")
+        with st.status("06 — Loading Inflation Channels …", expanded=True) as s06:
+            ic_fig = fig_inflation_channels(df, n=opts["n_history"])
+            if ic_fig.data:
+                st.plotly_chart(ic_fig, use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.info("Inflation channel data not yet fetched. Run `python run.py` first.")
 
-        # Channel data table
-        channel_cols = [c for c in [
-            "cpi_inflation", "core_inflation", "breakeven_5y", "breakeven_10y",
-            "import_price_yoy", "import_xfuel_yoy", "global_energy_yoy",
-            "global_food_yoy", "fao_food_yoy", "arab_wti_spread", "gipi",
-        ] if c in df.columns]
-        if channel_cols:
-            recent = df[channel_cols].dropna(how="all").tail(12)
-            st.markdown("**Last 12 months — key inflation transmission variables**")
-            st.dataframe(
-                recent.style.format("{:.2f}", na_rep="—")
-                       .background_gradient(cmap="RdYlGn_r", axis=0),
-                use_container_width=True,
-            )
+            # Channel data table
+            channel_cols = [c for c in [
+                "cpi_inflation", "core_inflation", "breakeven_5y", "breakeven_10y",
+                "import_price_yoy", "import_xfuel_yoy", "global_energy_yoy",
+                "global_food_yoy", "fao_food_yoy", "arab_wti_spread", "gipi",
+            ] if c in df.columns]
+            if channel_cols:
+                recent = df[channel_cols].dropna(how="all").tail(12)
+                st.markdown("**Last 12 months — key inflation transmission variables**")
+                st.dataframe(
+                    recent.style.format("{:.2f}", na_rep="—")
+                           .background_gradient(cmap="RdYlGn_r", axis=0),
+                    use_container_width=True,
+                )
+            s06.update(label="06 — Inflation Channels  ✓", state="complete", expanded=True)
 
 
 if __name__ == "__main__":
