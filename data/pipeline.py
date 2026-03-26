@@ -24,6 +24,7 @@ Usage
 
 from __future__ import annotations
 import io
+import os
 import warnings
 import logging
 from pathlib import Path
@@ -66,13 +67,18 @@ try:
     if _proj_root not in sys.path:
         sys.path.insert(0, _proj_root)
     from config import cfg
-except Exception:
+    log.info(f"[DEBUG] config.py loaded OK — FRED_KEY len={len(cfg.FRED_KEY)}, "
+             f"FRED_CORE keys={len(getattr(cfg, 'FRED_CORE', {}))}")
+except Exception as _cfg_err:
+    log.error(f"[DEBUG] config.py import FAILED: {_cfg_err}")
     class cfg:
-        FRED_KEY = "YOUR_FRED_KEY"
+        FRED_KEY = os.getenv("FRED_API_KEY", "")
         START_DATE = "1985-01-01"
-        END_DATE = "2024-12-31"
+        END_DATE = "2025-12-31"
         DATA_DIR = Path("data/cache")
         FRED_SERIES = {}
+        FRED_CORE = {}
+        FRED_INFLATION = {}
         YF_TICKERS = {}
 
 
