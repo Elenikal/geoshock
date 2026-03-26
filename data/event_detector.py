@@ -139,6 +139,7 @@ class AISSignal:
     tanker_z:     float
     brent_wti_spread: float
     brent_wti_z:  float
+    freight_z:    float          # BWET TD3C VLCC freight proxy z-score
     anomaly:      bool
     tickers_used: list[str]
     timestamp:    datetime
@@ -148,6 +149,7 @@ class AISSignal:
             "tanker_z":         round(self.tanker_z, 3),
             "brent_wti_spread": round(self.brent_wti_spread, 2),
             "brent_wti_z":      round(self.brent_wti_z, 3),
+            "freight_z":        round(self.freight_z, 3),
             "anomaly":          self.anomaly,
             "tickers_used":     self.tickers_used,
         }
@@ -443,6 +445,7 @@ def _rule_based_batch(headlines: list[str]) -> dict:
 # ===============================================================================
 
 _TANKER_TICKERS = ["INSW", "TK", "TRMD", "FRO"]
+_FREIGHT_TICKER = "BWET"   # Breakwave Tanker ETF — 90% TD3C VLCC futures (MEG→Asia)
 _BRENT_TICKER   = "BZ=F"
 _WTI_TICKER     = "CL=F"
 
@@ -469,7 +472,7 @@ def fetch_ais_proxy(
     now = datetime.now(timezone.utc)
     if not YF_AVAILABLE:
         log.warning("yfinance unavailable - AIS proxy defaulting to no-anomaly")
-        return AISSignal(0.0, 0.0, 0.0, False, [], now)
+        return AISSignal(0.0, 0.0, 0.0, 0.0, False, [], now)
 
     tickers = tickers or _TANKER_TICKERS
     start   = (now - timedelta(days=lookback_days + 5)).strftime("%Y-%m-%d")
@@ -495,7 +498,21 @@ def fetch_ais_proxy(
     tanker_z_val = 0.0
     if basket_rets:
         basket = pd.concat(basket_rets, axis=1).mean(axis=1)
-        tanker_z_val = float(_rolling_z(basket, 30).iloc[-1])
+        tanker_z_val = float(_rolling_z(basket).iloc[-1])
+
+    # -- BWET freight proxy (TD3C VLCC futures) --------------------------------
+    freight_z_val = 0.0
+    try:
+        fw = yf.download(_FREIGHT_TICKER, start=start, progress=False, auto_adjust=True)
+        if not fw.empty:
+            fc = (fw["Close"].iloc[:, 0] if isinstance(fw.columns, pd.MultiIndex)
+                  else fw["Close"])
+            freight_ret = fc.pct_change().dropna()
+            if len(freight_ret) > 10:
+                freight_z_val = float(_rolling_z(freight_ret).iloc[-1])
+                used.append(_FREIGHT_TICKER)
+    except Exception as e:
+        log.debug(f"  BWET freight: {e}")
 
     # -- Brent-WTI spread ------------------------------------------------------
     spread_val   = 0.0
@@ -511,20 +528,21 @@ def fetch_ais_proxy(
                   else wt["Close"])
             spread = (bc - wc).dropna()
             spread_val = float(spread.iloc[-1]) if not spread.empty else 0.0
-            bwz_val    = float(_rolling_z(spread, 30).iloc[-1]) if not spread.empty else 0.0
+            bwz_val    = float(_rolling_z(spread).iloc[-1]) if not spread.empty else 0.0
     except Exception as e:
         log.debug(f"  Brent-WTI: {e}")
 
-    # Anomaly triggers if EITHER:
-    #   1. Original: tanker basket + Brent-WTI spread both extreme
-    #   2. New: tanker stocks surging (disruption = higher freight rates)
-    #      combined with any elevated Brent-WTI spread (z > 0.5)
+    # Anomaly triggers if ANY of:
+    #   1. Tanker basket + Brent-WTI spread both extreme
+    #   2. Tanker stocks surging (disruption profit) + any spread elevation
+    #   3. Freight rates spiking (BWET z > threshold) — most direct signal
     anomaly = (
         (abs(tanker_z_val) > z_threshold and bwz_val > z_threshold) or
-        (tanker_z_val > z_threshold and bwz_val > 0.5)
+        (tanker_z_val > z_threshold and bwz_val > 0.5) or
+        (freight_z_val > z_threshold)
     )
 
-    log.info(f"  AIS proxy: tanker_z={tanker_z_val:+.2f}  "
+    log.info(f"  AIS proxy: tanker_z={tanker_z_val:+.2f}  freight_z={freight_z_val:+.2f}  "
              f"brent_wti_spread=${spread_val:.1f}  brent_wti_z={bwz_val:+.2f}  "
              f"anomaly={anomaly}")
 
@@ -532,6 +550,7 @@ def fetch_ais_proxy(
         tanker_z=round(tanker_z_val, 3),
         brent_wti_spread=round(spread_val, 2),
         brent_wti_z=round(bwz_val, 3),
+        freight_z=round(freight_z_val, 3),
         anomaly=anomaly,
         tickers_used=used,
         timestamp=now,

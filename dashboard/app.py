@@ -630,10 +630,12 @@ def render_layer0_panel(opts: dict) -> None:
     with col_b:
         # AIS tanker proxy detail
         tanker_z  = ais_s.get("tanker_z", 0.0) if ais_s else 0.0
+        freight_z = ais_s.get("freight_z", 0.0) if ais_s else 0.0
         bw_spread = ais_s.get("brent_wti_spread", 0.0) if ais_s else 0.0
         bw_z      = ais_s.get("brent_wti_z", 0.0) if ais_s else 0.0
         tickers   = ais_s.get("tickers_used", []) if ais_s else []
 
+        freight_color = RED if abs(freight_z) > 1.5 else AMBER if abs(freight_z) > 1.0 else TEXT
         ais_color = RED if ais_an else GREEN
         st.markdown(f"""
         <div class='ais-box'>
@@ -644,10 +646,11 @@ def render_layer0_panel(opts: dict) -> None:
               {'⚠  ANOMALY DETECTED' if ais_an else '✓  Normal'}</div>
             <div style='font-size:10px;color:{TEXT};margin-top:6px'>
               Tanker basket z: <b>{tanker_z:+.2f}</b><br>
+              VLCC freight z (BWET): <b style='color:{freight_color}'>{freight_z:+.2f}</b><br>
               Brent–WTI spread: <b>${bw_spread:.1f}</b>  (z={bw_z:+.2f})<br>
               Tickers: {', '.join(tickers) if tickers else 'N/A'}<br>
               <span style='color:{MUTED};font-size:9px'>
-                Anomaly = tanker |z| > 1.5 AND Brent–WTI z > 1.5</span>
+                Anomaly = freight z > 1.5 OR (tanker + spread both extreme)</span>
             </div>
           </div>
         </div>
