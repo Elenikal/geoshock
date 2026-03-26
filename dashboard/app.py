@@ -46,7 +46,10 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+os.chdir(_PROJECT_ROOT)
 import streamlit as st
 
 # Re-apply after streamlit's own import (st can reset warning filters)
