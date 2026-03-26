@@ -447,9 +447,9 @@ _BRENT_TICKER   = "BZ=F"
 _WTI_TICKER     = "CL=F"
 
 
-def _rolling_z(series: pd.Series, window: int = 30) -> pd.Series:
-    mu  = series.rolling(window, min_periods=5).mean()
-    sig = series.rolling(window, min_periods=5).std()
+def _rolling_z(series: pd.Series, window: int = 90) -> pd.Series:
+    mu  = series.rolling(window, min_periods=10).mean()
+    sig = series.rolling(window, min_periods=10).std()
     return ((series - mu) / sig.clip(lower=1e-6)).fillna(0.0)
 
 
@@ -461,8 +461,10 @@ def fetch_ais_proxy(
     """
     Compute AIS proxy signal from tanker equities + Brent-WTI spread.
 
-    Anomaly = True when BOTH:
-      abs(tanker_basket_z) > threshold  AND  brent_wti_z > threshold
+    Anomaly = True when EITHER:
+      1. abs(tanker_basket_z) > threshold AND brent_wti_z > threshold
+      2. tanker_z > threshold (surging = disruption) AND brent_wti_z > 0.5
+    Uses 90-day rolling window to avoid normalizing sustained disruptions.
     """
     now = datetime.now(timezone.utc)
     if not YF_AVAILABLE:
@@ -513,7 +515,14 @@ def fetch_ais_proxy(
     except Exception as e:
         log.debug(f"  Brent-WTI: {e}")
 
-    anomaly = (abs(tanker_z_val) > z_threshold) and (bwz_val > z_threshold)
+    # Anomaly triggers if EITHER:
+    #   1. Original: tanker basket + Brent-WTI spread both extreme
+    #   2. New: tanker stocks surging (disruption = higher freight rates)
+    #      combined with any elevated Brent-WTI spread (z > 0.5)
+    anomaly = (
+        (abs(tanker_z_val) > z_threshold and bwz_val > z_threshold) or
+        (tanker_z_val > z_threshold and bwz_val > 0.5)
+    )
 
     log.info(f"  AIS proxy: tanker_z={tanker_z_val:+.2f}  "
              f"brent_wti_spread=${spread_val:.1f}  brent_wti_z={bwz_val:+.2f}  "
