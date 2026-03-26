@@ -118,9 +118,14 @@ Q_COLORS = {0.05: RED, 0.10: ORANGE, 0.25: AMBER,
 
 @st.cache_data(ttl=3600, show_spinner="Loading macro data …")
 def load_data(refresh: bool = False) -> pd.DataFrame:
-    from data.pipeline import DataPipeline
+    from data.pipeline import DataPipeline, cfg as pipeline_cfg
+    logging.info(f"[DEBUG] FRED_KEY present: {bool(pipeline_cfg.FRED_KEY)}, "
+                 f"FRED_KEY length: {len(pipeline_cfg.FRED_KEY)}, "
+                 f"FRED_SERIES count: {len(getattr(pipeline_cfg, 'FRED_CORE', getattr(pipeline_cfg, 'FRED_SERIES', {})))}")
     dp = DataPipeline()
-    return dp.build(use_cache=not refresh)
+    df = dp.build(use_cache=not refresh)
+    logging.info(f"[DEBUG] Pipeline returned: {df.shape}, columns: {list(df.columns)[:15]}")
+    return df
 
 
 @st.cache_data(ttl=300, show_spinner="Running Layer 0 detection …")
@@ -718,9 +723,19 @@ def main():
     with st.status("Loading macro dataset …", expanded=False) as data_status:
         try:
             df = load_data(refresh=opts["refresh"])
-            data_status.update(label="Macro data loaded", state="complete")
+            # Verify we got real data, not an empty frame
+            if df is not None and "ip_yoy" in df.columns and df["ip_yoy"].notna().sum() >= 24:
+                data_status.update(label="Macro data loaded ✓", state="complete")
+            elif df is not None and not df.empty:
+                st.warning(f"Pipeline returned {df.shape[1]} columns but missing key outcome vars. "
+                           f"Available: {[c for c in df.columns if 'ip' in c or 'cpi' in c or 'gdp' in c]}")
+                data_status.update(label="Macro data loaded (partial)", state="complete")
+            else:
+                raise ValueError("Pipeline returned empty DataFrame")
         except Exception as e:
+            import traceback
             st.error(f"Data load error: {e}")
+            st.code(traceback.format_exc(), language="text")
             from data.pipeline import _synthetic_gpr, _synthetic_fred, engineer_features
             gpr = _synthetic_gpr().to_frame("gpr")
             fred = _synthetic_fred({})
