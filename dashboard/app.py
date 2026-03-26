@@ -550,12 +550,11 @@ def render_layer0_panel(opts: dict) -> None:
     st.markdown("<div class='section-hdr'>00 — LAYER 0: REAL-TIME EVENT DETECTION</div>",
                 unsafe_allow_html=True)
 
-    from config import cfg
     with st.spinner("Running Layer 0 (GDELT + CAMEO + AIS) …"):
         sig = load_event_signal(
             lookback_hours=opts["lookback"],
             use_llm=opts["use_llm"],
-            _key=cfg.ANTHROPIC_KEY,
+            _key=os.getenv("ANTHROPIC_API_KEY", ""),
         )
 
     if "error" in sig and not sig.get("_from_cache"):
