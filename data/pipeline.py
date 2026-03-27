@@ -32,6 +32,21 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
+
+
+def _get_secret(key: str, default: str = "") -> str:
+    """Read a secret from env vars or Streamlit Cloud secrets."""
+    val = os.getenv(key, "")
+    if val:
+        return val
+    try:
+        import streamlit as _st
+        val = _st.secrets.get(key, "")
+        if val:
+            return str(val)
+    except Exception:
+        pass
+    return default
 import requests
 
 warnings.filterwarnings("ignore")
@@ -80,8 +95,8 @@ except Exception as _cfg_err:
     from dataclasses import dataclass, field as _field
     @dataclass
     class _FallbackCfg:
-        FRED_KEY:      str  = os.getenv("FRED_API_KEY", "")
-        ANTHROPIC_KEY: str  = os.getenv("ANTHROPIC_API_KEY", "")
+        FRED_KEY:      str  = _get_secret("FRED_API_KEY")
+        ANTHROPIC_KEY: str  = _get_secret("ANTHROPIC_API_KEY")
         START_DATE:    str  = "1985-01-01"
         END_DATE:      str  = "2025-12-31"
         DATA_DIR:      Path = Path(_proj_root) / "data" / "cache"
@@ -129,45 +144,35 @@ GSCPI_URL = "https://www.newyorkfed.org/medialibrary/media/research/gscpi/downlo
 
 def fetch_gpr_index() -> pd.Series:
     """
-    Download the Geopolitical Risk (GPR) Index from Iacoviello's website.
-    Falls back to the FRED GEPUCURRENT series if download fails.
+    Download the Geopolitical Risk (GPR) Index.
+    Primary source: FRED series GEPUCURRENT (Caldara & Iacoviello).
+    Fallback: direct download from Iacoviello's website (GPR column).
 
     Returns monthly pd.Series from 1985-01-01, name='gpr'.
     """
+    log.info("Fetching GPR index from FRED (GEPUCURRENT) …")
+    try:
+        return _fetch_gpr_fred()
+    except Exception as e:
+        log.warning(f"  FRED GPR failed ({e}). Trying website download …")
+
     log.info("Fetching GPR index from Iacoviello website …")
     try:
         resp = requests.get(GPR_URL, timeout=30)
         resp.raise_for_status()
-        df = pd.read_excel(io.BytesIO(resp.content), sheet_name=0)
 
-        # Locate date and US GPR columns (structure varies slightly by version)
-        date_col = [c for c in df.columns if "year" in str(c).lower() or "date" in str(c).lower()]
-        gpr_col = [c for c in df.columns if "gprc_us" in str(c).lower() or
-                   ("gpr" in str(c).lower() and "us" not in str(c).lower() and
-                    "threat" not in str(c).lower() and "act" not in str(c).lower())]
+        # The Excel file has a blank first row; actual headers are in row 1
+        df = pd.read_excel(io.BytesIO(resp.content), sheet_name=0, header=1)
+        df.columns = [str(c).strip() for c in df.columns]
 
-        if not date_col or not gpr_col:
-            # Fallback: assume first col = year/month, one of the later cols is overall GPR
-            df.columns = [str(c).strip() for c in df.columns]
-            year_col = df.columns[0]
-            month_col = df.columns[1] if len(df.columns) > 1 else None
-            gpr_col_name = df.columns[2]
-        else:
-            year_col = date_col[0]
-            gpr_col_name = gpr_col[0]
-            month_col = None
+        target_col = "GPR"
+        if target_col not in df.columns:
+            raise KeyError(f"{target_col} not found in columns: {df.columns[:10].tolist()}")
 
-        # Build date index
-        if month_col:
-            df["date"] = pd.to_datetime(
-                df[year_col].astype(int).astype(str) + "-" +
-                df[month_col].astype(int).astype(str).str.zfill(2) + "-01"
-            )
-        else:
-            df["date"] = pd.to_datetime(df[year_col])
-
-        s = df.set_index("date")[gpr_col_name].astype(float)
+        df["date"] = pd.to_datetime(df["month"])
+        s = df.set_index("date")[target_col].astype(float)
         s.name = "gpr"
+        s = s.dropna()
         s = s[s.index >= cfg.START_DATE]
         log.info(f"  GPR: {len(s)} observations ({s.index[0].date()} → {s.index[-1].date()})")
         return s

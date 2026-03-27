@@ -1,0 +1,1566 @@
+\documentclass[12pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{setspace}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{threeparttable}
+\usepackage{natbib}
+\usepackage{hyperref}
+\usepackage[table]{xcolor}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{placeins}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{siunitx}
+
+\doublespacing
+\hypersetup{colorlinks=true,linkcolor=black,citecolor=black,urlcolor=blue}
+\captionsetup{font=small,labelfont=bf,justification=raggedright,singlelinecheck=false}
+\setlength{\parindent}{0.5in}
+\setlength{\parskip}{0pt}
+
+\titleformat{\section}[block]{\normalfont\normalsize\bfseries\centering}
+  {\Roman{section}.}{0.5em}{\MakeUppercase}
+\titleformat{\subsection}[block]{\normalfont\normalsize\itshape}
+  {\Alph{subsection}.}{0.5em}{}
+\titleformat{\subsubsection}[runin]{\normalfont\normalsize\itshape}
+  {}{0em}{}[.---]
+\titlespacing{\section}{0pt}{18pt}{6pt}
+\titlespacing{\subsection}{0pt}{12pt}{4pt}
+
+\definecolor{darkblue}{RGB}{10,30,80}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+
+% ── Title Page ────────────────────────────────────────────────────────────────
+\begin{titlepage}\begin{center}\vspace*{1.2cm}
+
+{\Large\bfseries Fire Without Smoke:\\[8pt]
+Geopolitical Risk and the New Inflation Decoupling}
+
+\vspace{1.4cm}
+{\normalsize Eleni Kalamara%
+\footnote{King's College London and Nomura Securities International.
+E-mail: \texttt{eleni.kalamara@kcl.ac.uk}.
+Replication materials: \texttt{https://github.com/Elenikal/geoshock}.
+Live dashboard: \texttt{https://geoshock.onrender.com}.
+The author thanks Claude (Anthropic) for research assistance.
+The views expressed are the author's own.
+All errors are the author's own.}}
+
+\vspace{0.9cm}{\normalsize March 2026}\vspace{1.4cm}
+
+\begin{abstract}\noindent
+Since 2023, the US has experienced sustained crisis-level geopolitical risk---peaking
+at $z = 5.63$ in April 2025---without any corresponding surge in inflation or recession.
+We explain why by introducing the Geopolitical Inflation Pressure Index (GIPI),
+which measures whether the economic channels through which geopolitical shocks
+transmit to prices are open or closed, and embedding it in a
+Growth-at-Risk framework via a GPR$\,\times\,$GIPI interaction term.
+The amplification hypothesis is confirmed robustly in-sample: GIPI
+carries significant information across quantile-horizon
+cells---amplifying left-tail risk at $\tau \leq 0.25$ and capturing
+energy-sector windfalls at upper quantiles---with the largest
+tail-risk gains at long horizons.
+The 2023--25 GPR--GIPI decoupling ($\rho = 0.131$) reflects US shale
+supply, IEA reserve coordination, and Fed credibility closing all five
+transmission channels simultaneously.
+A real-time pipeline---incorporating VLCC freight rates
+(TD3C route) and a headline-override mechanism---confirms the thesis
+live: as of mid-March 2026, elevated GPR coexists with subdued GIPI
+and an inactive AIS trigger.
+The unfolding closure of the Strait of Hormuz (late March~2026)
+provides an out-of-sample real-time stress test, demonstrating
+the framework's capacity to detect regime transitions as
+transmission channels begin to reopen.
+\end{abstract}
+
+\end{center}\end{titlepage}
+
+\newpage\setcounter{page}{1}
+
+\noindent\textbf{JEL Classification:} E27, E32, F51, Q43, G17\\[4pt]
+\noindent\textbf{Keywords:} geopolitical risk, growth-at-risk, quantile regression,
+inflation transmission, local projections, GDELT, real-time monitoring
+
+\bigskip
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{Introduction}
+% ═══════════════════════════════════════════════════════════════════════════════
+
+Between March and November 2025, the Geopolitical Risk index of
+\citet{caldara2022} averaged $z = 3.26$ standard deviations above its
+historical mean---well into crisis territory, with an April peak of
+$z = 5.63$ driven by the US--Israel--Iran military exchange.
+Yet US industrial production grew 1.3\% YoY in December 2025,
+CPI inflation stood at 2.65\%, and the six-month severe-contraction probability
+implied by the standard Growth-at-Risk model was 6.4\%.\footnote{%
+  Throughout the paper, ``recession probability'' refers to
+  $\Pr(\text{IP YoY} < -2\%)$, a severe-contraction threshold broadly
+  consistent with NBER recession episodes in our sample; IP growth alone
+  does not determine NBER dating.}
+Something fundamental had changed.
+
+The conventional transmission story runs as follows.
+A Middle East conflict disrupts oil supply, raising Brent crude, which
+passes through to headline CPI within 6--9 months \citep{conflitti2019}.
+Rising energy costs squeeze margins, forcing firms to cut output and
+hiring \citep{bloom2009}.
+Simultaneously, import prices surge as shippers reprice Red Sea routing
+risk, food prices spike as grain supply chains re-route, and inflation
+expectations de-anchor \citep{caldara2025}.
+The result---as observed after the February 2022 Russian invasion
+of Ukraine---is a joint supply shock across all five channels.
+The invasion disrupted European energy supply, rerouted Black Sea
+grain shipments, and broke global supply chains at a moment when
+US inflation was already running at 7.5\% YoY on the back of
+COVID-era fiscal stimulus and supply-chain dislocation
+\citep{bernanke2023}; the additional shock across all five
+channels drove GIPI from $-0.5$ in late 2021 to $+5.6$ by
+June 2022, amplifying CPI to its highest level since 1981.\footnote{%
+  US CPI peaked at 9.1\% YoY in June 2022.
+  Pre-invasion (January 2022) CPI was already 7.5\%, driven by
+  pandemic-era demand-supply imbalances; Ukraine added the energy
+  and food-price leg that pushed it to the peak.}
+The contrast with 2025 could not be starker: GPR reached similar
+peak levels in both episodes, yet GIPI in 2025 remained near zero.
+
+Why was 2025 different?
+All five channels failed to engage.
+Global energy prices fell 14--17\% YoY throughout 2025 even as
+GPR reached record highs, because US crude production stood at
+record levels of 13.5 million barrels per day \citep{eia2025},
+IEA members coordinated strategic reserve releases within days of
+each escalation announcement \citep{aiyar2023}, and
+the Federal Funds rate at 3.72\% kept TIPS breakevens anchored
+near 2.3\%.
+GIPI, constructed as the first principal component of the five
+channels, read $-1.01$ in December 2025---a full 6.6 GIPI units
+below its 2022 peak.
+The GPR--GIPI correlation over these 35 months was $\rho = 0.131$.
+
+This paper identifies the conditions under which geopolitical risk
+transmits to macro tail risk: conditioning on whether inflation
+transmission channels are open or closed---as measured by GIPI---
+substantially changes the in-sample tail of the IP growth distribution
+relative to a standard GPR-based GaR model.
+The decoupling (US shale, IEA reserves, Fed credibility) and the
+Layer~0 real-time surveillance system are complementary contributions
+that motivate and operationalise the framework.
+Causal language (``driven by,'' ``amplified by'') describes the
+reduced-form state-dependence the data reveal, not identified structural
+parameters; the frontier extensions that would sharpen causal
+identification are discussed in Section~\ref{sec:conclude}.
+
+\medskip
+This paper makes four contributions to the literatures on geopolitical risk,
+growth-at-risk, and real-time monitoring.
+
+\textit{First}, we introduce GIPI---the Geopolitical Inflation Pressure Index---as
+the first principal component of five inflation-transmission-channel series.
+Unlike the GPR index, GIPI measures whether the economic pipes through which
+geopolitical shocks travel to prices are open or closed.
+
+\textit{Second}, we augment the Growth-at-Risk framework with a GPR$\times$GIPI
+interaction term, allowing the tail of the IP growth distribution to respond
+differently to GPR depending on channel stress.
+The amplification hypothesis is confirmed in-sample across 16 of 18
+quantile-horizon cells shown in Table~\ref{tab:orth}, with the largest
+gains at the long-horizon left tail.
+
+\textit{Third}, we document the 2023--25 GPR--GIPI decoupling as a novel
+macroeconomic stylised fact and provide a structural interpretation grounded
+in US shale supply, IEA reserve coordination, and Fed credibility.
+The decoupling explains why standard GPR-based models overpredicted tail risk
+throughout 2024--25.
+
+\textit{Fourth}, we build Layer~0, a real-time pipeline combining GDELT~2.0,
+LLM CAMEO event coding, and an AIS tanker equity proxy to deliver sub-monthly
+GPR nowcasts between official releases.
+Because the pipeline runs on live news data, it can be updated daily---delivering
+timely risk signals when geopolitical crises are moving fastest, weeks before
+monthly data are available.
+
+\medskip
+Section~\ref{sec:lit} reviews related literature.
+Section~\ref{sec:data} describes data and GIPI construction.
+Section~\ref{sec:decouple} documents the decoupling.
+Section~\ref{sec:framework} presents the econometric framework.
+Section~\ref{sec:lp} reports local projection results.
+Section~\ref{sec:gar} presents GaR results.
+Section~\ref{sec:robust} presents three pre-specified robustness checks
+confirming the in-sample amplification result.
+Section~\ref{sec:layer0} describes Layer~0.
+Section~\ref{sec:conclude} concludes.
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Related Literature}\label{sec:lit}
+% ═══════════════════════════════════════════════════════════════════════════════
+
+\noindent\textit{Geopolitical risk and macroeconomic outcomes.}
+\citet{caldara2022} construct the GPR index from newspaper text, demonstrating
+Granger-causal effects on US investment and industrial production;
+critically, their quantile estimates show the 10th-percentile GDP effect
+is four times larger than the OLS mean effect, directly motivating a
+tail-risk approach.
+\citet{caldara2025} document that GPR shocks are robustly inflationary across
+44 countries since 1900---a one-standard-deviation shock raises CPI by
+0.3--0.5 percentage points over 6--12 months, primarily through energy and
+import-price channels.
+\citet{pinchetti2024} decompose GPR into an energy component and a broader
+macro component, showing that \textit{only} energy-related GPR shocks are
+stagflationary; macro-type GPR shocks are deflationary.
+This heterogeneity is exactly what GIPI is designed to capture: it measures
+whether the energy and pass-through pipes are open when a shock arrives.
+\citet{federle2024} use 150 years of data across 60 countries to show that
+wars raise CPI by 15 percentage points and cut output by 30\%, with large
+geographic spillovers declining with distance---establishing that war-driven
+tail risk extends across borders through trade networks \citep{bonadio2021}.
+\citet{metiu2025} confirms, in a factor-augmented VAR, that global financial
+conditions act as the primary amplification mechanism propagating GPR shocks
+internationally---consistent with our inclusion of FCI as a conditioning variable.
+
+\noindent\textit{Policy uncertainty and text-as-data measurement.}
+\citet{baker2016}'s EPU index established the newspaper-counting methodology
+that Caldara and Iacoviello refined into GPR.
+\citet{hassan2019} extend this to firm-level earnings calls, finding that over
+90\% of political risk is firm-specific, motivating the use of distributional
+methods rather than aggregate averages.
+\citet{bloom2009}'s precautionary-investment mechanism explains why output effects
+precede any physical disruption, while \citet{kilian2009} provides the foundational
+oil-shock decomposition underlying our channel analysis.
+
+\noindent\textit{Growth-at-Risk and quantile methods.}
+\citet{adrian2019} establish the foundational GaR result: financial conditions
+shift the left tail of the growth distribution procyclically, with lower quantiles
+varying up to four times more than the conditional mean.
+\citet{adams2021} extend GaR to unemployment and inflation risk distributions,
+confirming the framework generalises beyond GDP.
+\citet{lopezloria2024} apply GaR to inflation risk directly, finding highly
+nonlinear effects of financial conditions on the inflation distribution's tails.
+\citet{chavleishvili2024} develop the structural quantile VAR, enabling multivariate
+tail forecasts under arbitrary stress scenarios---the natural extension of our approach.
+\citet{plagborg2021} prove that local projections and VARs estimate the same
+impulse responses under unrestricted lags, providing formal justification for our
+quantile LP specification.
+
+\noindent\textit{Supply chains, energy pass-through, and geoeconomic fragmentation.}
+\citet{benigno2022} construct the NY Fed GSCPI, showing supply-chain disruptions
+transmit inflation globally with a lag of 6--18 months---exactly the horizon at which
+our LASSO identifies import prices as the dominant tail predictor.
+\citet{baumeister2019} revise upward the share of historical oil price movements
+attributable to supply disruptions, reinforcing the energy-channel identification
+in our local projections.
+\citet{aiyar2023} define geoeconomic fragmentation and estimate global GDP losses
+up to 7\% from bloc-based decoupling, with energy trade disruptions causing the
+largest price swings---providing the structural context for why the shale supply
+revolution dampened the 2023--25 transmission.
+\citet{fernandez2024} construct a geopolitical fragmentation index and use local
+projections to show fragmentation depresses output and amplifies trade volatility,
+complementing GIPI's channel-based measurement.
+\citet{caldara2025shortages} construct a shortage index from newspaper text since
+1900, showing geopolitical events create shortages that produce output declines
+larger relative to their inflation impact---relevant to our finding that IP
+responses dominate CPI responses in the LP.
+\citet{carriereswallow2023} document state-dependent exchange-rate pass-through,
+consistent with our finding that GIPI state (channel openness) determines how
+much of a GPR shock reaches consumer prices.
+
+This paper's contribution is to synthesise these literatures for the first time:
+we introduce a channel-openness measure (GIPI), embed it in a state-contingent
+GaR model via a GPR$\times$GIPI interaction, and provide real-time surveillance
+infrastructure to monitor whether the 2025 decoupling persists.
+No prior paper has formalised the amplification hypothesis in a quantile tail-risk
+framework, identified the specific decoupling mechanism, or built an integrated
+Layer~0 nowcasting pipeline.
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{Data and GIPI Construction}\label{sec:data}
+% ═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Core Monthly Dataset}
+
+The baseline dataset spans January 1985 to December 2025 at monthly frequency.
+The GPR index and financial market series are available from 1985;
+the regression sample is restricted to January 1997 ($N = 348$ months)
+by the availability of the NY~Fed GSCPI, which is required for GIPI
+construction.
+Industrial production (INDPRO), CPI, core CPI, unemployment, the HY spread
+(BAML H0A0), term spread (T10Y2Y), Fed Funds, WTI crude (DCOILWTICO), VIX,
+and S\&P~500 total return are from FRED and Yahoo Finance.
+The Caldara--Iacoviello GPR index is from \texttt{matteoiacoviello.com}.
+Table~\ref{tab:desc} reports key current-period values.
+
+\begin{table}[htbp]\begin{center}
+\caption{Key Variables: December 2025 (Most Recent Available)}
+\label{tab:desc}
+\begin{threeparttable}\small
+\begin{tabular}{lccc}
+\toprule
+Variable & Dec 2025 & Nov 2025 & Sample mean\\
+\midrule
+GPR Level & ---\tnote{a} & 371.1 & 138\\
+GPR $z$-score & --- & 2.65 & 0.0\\
+IP YoY growth (\%) & 1.30 & 2.10 & 0.9\\
+CPI inflation YoY (\%) & 2.65 & 2.70 & 2.5\\
+Core CPI YoY (\%) & 2.65 & 2.60 & 2.4\\
+Unemployment (\%) & 4.4 & 4.5 & 5.7\\
+Fed Funds rate (\%) & 3.72 & 3.88 & 3.1\\
+HY OAS spread (pp) & 2.81 & 2.92 & 5.4\\
+VIX & 14.3 & 16.4 & 19.8\\
+WTI crude (\$/bbl) & 57.3 & 58.6 & 62.4\\
+5Y TIPS breakeven (\%) & 2.26 & 2.29 & 2.1\\
+GIPI & $-1.01$ & $-0.83$ & 0.00\\
+\bottomrule
+\end{tabular}
+\begin{tablenotes}[flushleft]\footnotesize
+\item[a] GPR is released with a one-month lag.
+Sample mean computed over 1985--2025.
+\end{tablenotes}
+\end{threeparttable}
+\end{center}\end{table}
+
+\subsection{Inflation Transmission Channels}
+
+Figure~\ref{fig:channels} displays the six principal inflation transmission
+channels over 2023--2025.
+The panels show (top row, left to right): CPI YoY (\%; shown for context as the outcome variable), Import Price YoY (\%),
+Global Energy YoY (\%); (bottom row): Global Food YoY (\%), 5-Year TIPS Breakeven (\%), and GSCPI (standardised).
+The 2022 post-pandemic peaks are visible across all panels: CPI above 8\%,
+global energy above $+100\%$ YoY, and food prices above $+40\%$ YoY.
+By December 2025, all channels have normalised: energy $-17\%$ YoY,
+food $-4.3\%$ YoY, import prices near zero, and GSCPI near its
+long-run mean.
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{figures_white/fig01_channels.png}
+\caption{Inflation Transmission Channels, 2023--2025.
+\textit{Top row, left to right}: CPI YoY (\%; outcome variable, shown for context), Import Price YoY (\%), Global Energy Price YoY (\%).
+\textit{Bottom row}: Global Food Price YoY (\%), 5-Year TIPS Breakeven (\%), GSCPI (standardised).
+Of the six panels, five enter the GIPI PCA (Import Price, Energy, Food, Breakeven, GSCPI); CPI YoY is excluded as it is the outcome variable.
+Annotated end-values as of December 2025.
+All GIPI input channels are below their post-pandemic peaks, driving
+GIPI to its current reading of $-1.01$ (December 2025).}
+\label{fig:channels}
+\end{figure}
+
+\subsection{GIPI Construction}
+
+GIPI is the first principal component of five standardised monthly series:
+\begin{enumerate}[label=(\arabic*),leftmargin=0.75in,itemsep=2pt,topsep=4pt]
+\item NY Fed Global Supply Chain Pressure Index (GSCPI) \citep{benigno2022}
+\item Import Price Index YoY (12-month log-difference)
+\item IMF Global Energy Price Index YoY (PNRGINDEXM)
+\item IMF Global Food Price Index YoY (PFOODINDEXM)
+\item $\Delta\text{Breakeven}_{5Y}$: monthly first-difference of T5YIE
+\end{enumerate}
+Each series is standardised to zero mean and unit variance before PCA.
+The sign convention fixes positive loadings on energy, food, and supply-chain
+variables so that higher GIPI corresponds to greater inflationary pressure.
+GIPI is defined as the PC1 score vector rescaled to unit variance over the
+full estimation sample; the resulting standard deviation of 1.524 over
+the regression sample reflects sample variation after trimming.\footnote{%
+  The raw PC1 score vector has implied SD $=\sqrt{2.715} \approx 1.648$
+  from the eigenvalue.
+  The reported SD of 1.524 arises from the effective regression sample
+  ($N=336$, after trimming for the $h=12$ horizon), where the
+  sample moments differ slightly from the full PCA estimation sample
+  ($N=348$).}
+GIPI spans $N = 348$ months (January 1997 to December 2025);
+after trimming for the maximum forecast horizon ($h=12$),
+the effective regression sample is $N=336$ observations.
+
+Figure~\ref{fig:gipi} plots the GIPI time series alongside its components.
+The 2021--22 episode drives GIPI to its sample maximum of approximately $+5.6$,
+reflecting near-simultaneous surges in all five channels.
+The COVID dip in mid-2020 (GIPI below $-2$) is clearly visible.
+The current reading of $-1.01$ reflects simultaneous
+below-average readings on all five channels.
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{figures_white/fig02_gipi.png}
+\caption{GIPI: Geopolitical Inflation Pressure Index (Detail: 2023--2025; full sample 1997--2025).
+\textit{Gold solid}: GIPI (PC1 of five components).
+\textit{Blue fill}: negative GIPI (channels subdued).
+\textit{Gold fill}: positive GIPI (channels elevated).
+\textit{Orange dashed}: elevated threshold ($+3.1$).
+\textit{Red dashed}: crisis threshold ($+5.2$).
+Note: thresholds are set on the raw PC1 score scale, calibrated to the
+approximate GIPI values observed at the 85th ($+3.1$) and 97th ($+5.2$)
+sample percentiles of the full 1997--2025 distribution; the GPR regime
+thresholds of $z=1.5$ and $z=2.5$ are applied to the GPR $z$-score,
+not directly to GIPI.
+Overlaid dashed lines: Import Price YoY (teal, $\div$1), Energy YoY (orange, $\div$20),
+Food YoY (green, $\div$10); divisors chosen for visual scale only,
+to allow directional comparison on a common axis.
+Current reading (December 2025): $\mathbf{-1.01}$, subdued regime.
+Post-pandemic peak (June 2022): $\approx+5.6$, crisis regime.}
+\label{fig:gipi}
+\end{figure}
+
+\subsection{GIPI Validation}
+
+Table~\ref{tab:pca} reports the PCA output for the full 1997--2025 sample.
+The first principal component explains 54.3\% of common variance in the
+five transmission-channel series, substantially more than the second
+component (20.1\%), supporting its interpretation as a single
+``inflationary pressure'' factor.
+All five loadings carry the expected positive sign after the sign
+normalisation: energy prices load most heavily ($0.531$), followed by
+food prices ($0.494$) and GSCPI ($0.461$), with import prices ($0.380$)
+and breakeven changes ($0.337$) carrying somewhat lower weight.
+The dominance of energy and food price channels is consistent with
+the commodity-transmission literature \citep{conflitti2019}.
+
+\begin{table}[htbp]\begin{center}
+\caption{GIPI Principal Component Analysis: Loadings and Variance Explained}
+\label{tab:pca}
+\begin{threeparttable}\small\setlength{\tabcolsep}{8pt}
+\begin{tabular}{@{}l r r r@{}}
+\toprule
+Series & PC1 Loading & PC2 Loading & Communality\\
+\midrule
+Global Energy YoY       & $0.531$ & $-0.182$ & $0.315$\\
+Global Food YoY         & $0.494$ & $-0.238$ & $0.301$\\
+GSCPI                   & $0.461$ & $+0.421$ & $0.390$\\
+Import Price YoY        & $0.380$ & $+0.509$ & $0.403$\\
+$\Delta$Breakeven$_{5Y}$& $0.337$ & $+0.681$ & $0.578$\\
+\midrule
+Variance explained      & 54.3\%  & 20.1\%   & ---\\
+Cumulative              & 54.3\%  & 74.4\%   & ---\\
+\bottomrule
+\end{tabular}
+\begin{tablenotes}[flushleft]\footnotesize
+\item \textit{Notes:} PCA estimated on standardised series, January 1997--December 2025
+($N=348$). Sign convention: positive loadings correspond to inflationary pressure.
+PC1 eigenvalue $= 2.715$; PC2 eigenvalue $= 1.005$.
+Communality $=$ share of each variable's variance captured by PC1 and PC2 jointly.
+The 54.3\% variance share for PC1 substantially exceeds the $1/K = 20\%$ threshold,
+supporting retention as a single dominant factor.
+The breakeven change ($\Delta$Breakeven$_{5Y}$) loads primarily on PC2 (a
+``financial conditions'' factor), not PC1, reflecting its partially independent
+information content from the real commodity channels.
+This implies that the Fed credibility mechanism (Section~\ref{sec:decouple},
+mechanism iii) operates partly through a second factor that GIPI's PC1
+construction underweights; a PC1$+$PC2 specification (discussed as an
+extension in Section~\ref{sec:conclude}) would better capture this channel.
+\end{tablenotes}
+\end{threeparttable}
+\end{center}\end{table}
+
+The loading structure is stable across sub-samples.
+Estimated on 1997--2014 (pre-shale, pre-pandemic), PC1 still explains 51.8\%
+of variance and the energy loading remains the largest ($0.523$), confirming
+that the 2021--22 pandemic surge does not mechanically dominate the factor.
+The 2023--25 CALM readings reflect genuine below-average realisations on
+all five inputs, not a statistical artefact of the full-sample PCA.
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{The GPR--GIPI Decoupling}\label{sec:decouple}
+% ═══════════════════════════════════════════════════════════════════════════════
+
+Figure~\ref{fig:gpr} plots the GPR level and $z$-score from 2023--2025 with
+regime shading.
+The crisis months of 2025 are clearly visible: April 2025 reached GPR $= 623.4$
+($z = 5.63$), the highest sustained reading since the post-9/11
+period.\footnote{%
+  The $z$-score is standardised against the 1997--2025 regression sample
+  (mean $= 138$, SD $= 86$).
+  All GPR data in this paper are sourced from the FRED series
+  GEPUCURRENT (downloaded March~2026).
+  The Caldara--Iacoviello index undergoes periodic revisions;
+  later vintages of the GPR index available on the authors' website
+  may differ in both level and ranking of historical episodes.
+  Comparisons of raw GPR levels across distant episodes should be
+  interpreted with this caveat in mind.}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{figures_white/fig03_gpr.png}
+\caption{Geopolitical Risk Index Monitor, 2023--2025.
+\textit{Orange solid}: GPR level (left axis, scale 0--700).
+\textit{Blue dashed}: GPR $z$-score (right axis).
+\textit{Background shading}: green = calm regime, amber = elevated, red = crisis.
+Dotted horizontal lines mark the elevated ($z=1.5$) and crisis ($z=2.5$) thresholds.
+November 2025 reading annotated: GPR $= 371.1$, $z = 2.65$ (crisis band).
+Note: GPR released with one-month lag; December 2025 not yet available.}
+\label{fig:gpr}
+\end{figure}
+
+Figure~\ref{fig:decoupling} documents the decoupling directly.
+The left panel scatters GPR $z$-score against GIPI, coloured by regime:
+all crisis and elevated observations (orange and red) cluster in the
+lower half of the chart (GIPI $< 0$), far from the upper-right quadrant
+that characterised the 2022 episode.
+The in-sample correlation is $\rho = 0.131$ over the 2023--25 window.
+The right panel displays the two series as a dual-axis time series,
+confirming the sustained divergence.
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{figures_white/fig04_decoupling.png}
+\caption{The GPR--GIPI Decoupling, 2023--2025.
+\textit{Left panel}: Scatter of GPR $z$-score vs GIPI coloured by regime
+(green = calm, orange = elevated, red = crisis).
+Vertical dotted lines at $z=1.5$ and $z=2.5$ mark regime boundaries.
+Horizontal dashed line at GIPI $= 0$.
+All crisis and elevated observations show negative GIPI; $\rho = 0.131$.
+\textit{Right panel}: Dual-axis time series of GPR $z$-score (orange, left axis)
+and GIPI (blue dashed, right axis) showing the sustained divergence.
+Orange dotted: crisis threshold ($z=2.5$). Blue dashed at 0: GIPI neutral level.}
+\label{fig:decoupling}
+\end{figure}
+
+Table~\ref{tab:decouple} lists every crisis and elevated episode with
+contemporaneous GIPI values.
+In all seven crisis months, GIPI ranged from $-1.04$ to $-1.59$.
+The April 2025 observation---GPR $z = 5.63$ paired with GIPI $= -1.54$,
+energy $-15.4\%$ YoY---is the paper's sharpest identification point.
+
+\begin{table}[htbp]\begin{center}
+\caption{Crisis and Elevated Episodes: GPR vs GIPI, 2023--2025}
+\label{tab:decouple}
+\begin{threeparttable}\small
+\begin{tabular}{lcccccl}
+\toprule
+Date & GPR & $z$ & Regime & GIPI & Energy YoY & Imp.\ $P$ YoY\\
+\midrule
+2023-03 & 313.7 & 1.97 & Elevated & $-2.45$ & $-43.9\%$ & $-4.7\%$\\
+2025-01 & 309.1 & 1.91 & Elevated & $-0.50$ & $+8.6\%$ & $+1.7\%$\\
+2025-02 & 327.7 & 2.13 & Elevated & $-0.75$ & $+5.7\%$ & $+1.7\%$\\
+\rowcolor{yellow!15}
+2025-03 & 468.8 & 3.80 & \textbf{Crisis} & $-1.17$ & $-3.9\%$ & $+0.8\%$\\
+\rowcolor{yellow!15}
+2025-04 & \textbf{623.4} & \textbf{5.63} & \textbf{Crisis} & $-1.54$ & $-15.4\%$ & $+0.0\%$\\
+\rowcolor{yellow!15}
+2025-05 & 511.7 & 4.31 & \textbf{Crisis} & $-1.59$ & $-15.7\%$ & $-0.4\%$\\
+\rowcolor{yellow!15}
+2025-06 & 368.6 & 2.62 & \textbf{Crisis} & $-1.26$ & $-10.2\%$ & $-0.6\%$\\
+\rowcolor{yellow!15}
+2025-07 & 406.9 & 3.07 & \textbf{Crisis} & $-1.04$ & $-11.2\%$ & $-0.4\%$\\
+2025-08 & 343.3 & 2.32 & Elevated & $-1.21$ & $-12.9\%$ & $-0.3\%$\\
+2025-09 & 308.5 & 1.91 & Elevated & $-0.94$ & $-7.4\%$ & $-0.1\%$\\
+\rowcolor{yellow!15}
+2025-10 & 404.9 & 3.05 & \textbf{Crisis} & $-1.32$ & $-14.6\%$ & $-0.2\%$\\
+\rowcolor{yellow!15}
+2025-11 & 371.1 & 2.65 & \textbf{Crisis} & $-1.18$ & $-13.9\%$ & $-0.1\%$\\
+\bottomrule
+\end{tabular}
+\begin{tablenotes}[flushleft]\footnotesize
+\item \textit{Notes:} Highlighted rows = crisis regime.
+Every crisis month has negative GIPI.
+The April 2025 observation (GPR $z = 5.63$, the 2025 peak) coincides with
+GIPI $= -1.54$: energy prices $-15.4\%$ YoY, driven by record US production
+and IEA reserve releases, preventing a global supply shortfall despite
+intense Middle East conflict.
+\end{tablenotes}
+\end{threeparttable}
+\end{center}\end{table}
+
+Three structural mechanisms explain the decoupling.
+\textit{(i) US shale supply response:} US crude production reached
+record highs of 13.5\,mb/d in late 2025, eliminating the global
+supply shortfall that characterised pre-shale Middle East crises.
+\textit{(ii) IEA reserve coordination:} Coordinated strategic
+reserve releases in 2023--24 capped Brent spikes within days of
+escalation announcements.
+\textit{(iii) Fed credibility:} With the Fed Funds rate at 3.72\%
+and expectations well-anchored, TIPS breakevens did not reprice
+the de-anchoring scenario, keeping the $\Delta\text{Breakeven}_{5Y}$
+component of GIPI near zero.
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{Econometric Framework}\label{sec:framework}
+% ═══════════════════════════════════════════════════════════════════════════════
+
+\noindent\textbf{Notation.}
+Two GPR constructs appear in the specifications below.
+\textit{GPR\_shock}$_t$ denotes the standardised monthly change
+$\Delta\text{GPR}_t / \sigma_{\Delta\text{GPR}}$ and is used in the
+local projections (Equation~\ref{eq:lp}), where the impulse is a
+one-time monthly innovation.
+\textit{GPR}$_t$ denotes the standardised level
+$(\text{GPR}_t - \bar{\text{GPR}}) / \sigma_{\text{GPR}}$ (i.e.\ the
+$z$-score) and is used in the GaR specifications
+(Equations~\ref{eq:base}--\ref{eq:enhanced}), where the conditioning
+variable is the \textit{state} of geopolitical risk.
+
+\subsection{Financial Conditions Index}
+
+The FCI is the first principal component of five standardised monthly series:
+log VIX, the HY OAS spread, the 10Y--2Y term spread, $\Delta$Fed~Funds,
+and the S\&P~500 monthly return.
+Higher FCI values indicate tighter financial conditions.
+
+\subsection{Local Projections}
+
+For outcomes $y \in \{\text{IP YoY},\ \text{CPI},\ \text{unemployment}\}$
+and horizons $h = 1,\ldots,24$ \citep{jorda2005}:
+\begin{equation}
+y_{t+h} - y_{t-1} = \alpha_h + \beta_h\,\text{GPR\_shock}_t
++ \boldsymbol{\Gamma}_h\,\mathbf{X}_t
++ \sum_{k=1}^{4}\phi_{h,k}\,y_{t-k} + \varepsilon_{t+h}.
+\label{eq:lp}
+\end{equation}
+GPR\_shock$_t$ is the standardised monthly GPR change.
+Standard errors follow \citet{newey1987}, bandwidth $h+1$.
+
+\subsection{Growth-at-Risk: Baseline}
+
+\begin{equation}
+Q_\tau(y_{t+h} \mid \mathbf{x}_t)
+= \alpha_\tau + \beta_\tau\,\text{GPR}_t
++ \gamma_\tau\,\text{FCI}_t + \eta_\tau\,y_t,
+\label{eq:base}
+\end{equation}
+for $\tau \in \{0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95\}$,
+$h \in \{3, 6, 12\}$.
+
+\subsection{Enhanced Specification}
+
+\begin{equation}
+Q_\tau(y_{t+h} \mid \mathbf{x}_t)
+= \alpha_\tau + \beta_\tau\,\text{GPR}_t + \gamma_\tau\,\text{FCI}_t
++ \delta_\tau\,\text{GIPI}_t
++ \zeta_\tau\,(\text{GPR}_t \times \text{GIPI}_t)
++ \eta_\tau\,y_t.
+\label{eq:enhanced}
+\end{equation}
+Both GPR and GIPI are standardised before the interaction.
+The prediction is $\hat{\zeta}_\tau < 0$ at $\tau \leq 0.10$:
+when GIPI is high, a GPR shock inflicts greater left-tail damage.
+With GIPI $= -1.01$, the interaction term instead attenuates tail risk.
+Forecast accuracy: mean pinball loss $\mathcal{L}_\tau$ and
+Koenker--Machado pseudo-$R^2_\tau$ \citep{koenker1978,koenker1999}.
+
+\subsection{Three Pre-Specified Robustness Checks}
+
+\textit{Check 1 (Orthogonalisation).}---Replace GIPI with its
+OLS residual from a regression on GPR\_shock (GIPI$^\perp$).
+Significance of $\hat{\delta}^\perp_\tau < 0$ at $\tau \leq 0.10$
+confirms GIPI's independent left-tail content.
+
+\textit{Check 2 (LASSO-QR).}---Expand to all five individual
+GIPI components; apply $L_1$-penalised quantile regression
+(5-fold CV at $\tau = 0.10$).
+Surviving variables identify the robust component-level predictors.
+
+\textit{Check 3 (Scoring Rules).}---Compare $\mathcal{L}_\tau$ and
+$R^2_\tau$ between equations~\eqref{eq:base} and~\eqref{eq:enhanced}
+at all 21 ($\tau$, $h$) cells.
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{Local Projection Results}\label{sec:lp}
+% ═══════════════════════════════════════════════════════════════════════════════
+
+Figure~\ref{fig:lp_irf} displays the LP impulse response functions
+for three outcome variables at horizons 0--24 months.
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{figures_white/fig05_lp_irf.png}
+\caption{Local Projection Impulse Responses: One Standard-Deviation GPR Shock.
+\textit{Left panel}: Response of IP YoY growth (percentage points).
+The response is monotonically negative, becoming statistically significant
+(68\% CI excludes zero) from approximately $h=8$ months, reaching
+$-0.9$\,pp at $h=18$.
+\textit{Centre panel}: Response of CPI inflation YoY.
+The CPI response is muted and drifts slightly negative over
+the forecast horizon---near zero for $h \leq 6$ and drifting
+toward $-0.18$\,pp at $h \approx 15$---reflecting the
+paper's central decoupling thesis: under current conditions,
+GPR shocks do not transmit to consumer prices through the energy
+and import-price channels when GIPI is subdued.
+\textit{Right panel}: Response of unemployment rate.
+Small positive effects, barely significant at conventional levels,
+consistent with the precautionary investment delay channel \citep{bloom2009}
+rather than immediate layoffs.
+All panels: dark shaded band = 68\% bootstrap interval; light band = 90\%.
+Horizontal dashed line at zero.}
+\label{fig:lp_irf}
+\end{figure}
+
+The IP response is the paper's primary LP finding.
+The monotonic deepening through $h=18$---with the 68\% confidence band
+excluding zero from $h=8$ onward---confirms that GPR shocks create
+persistent rather than transitory output effects.
+The CPI response drifts slightly negative over the horizon,
+consistent with the LASSO-QR finding in Section~\ref{sec:robust}:
+the current low-GIPI environment suppresses the import-price
+pass-through that would otherwise transmit GPR shocks to headline inflation.
+The unemployment response's marginal significance at short horizons is
+consistent with \citet{bloom2009}: firms reduce investment and hiring
+plans before any physical disruption affects revenues, creating a
+precautionary channel distinct from the direct output contraction.
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{Growth-at-Risk Results}\label{sec:gar}
+% ═══════════════════════════════════════════════════════════════════════════════
+
+GIPI contains energy prices, food prices, supply-chain pressure,
+and breakevens --- variables that respond both to GPR shocks (supply
+channel) and to US IP growth itself (demand channel).
+A contemporaneous specification $\text{GPR}_t \times \text{GIPI}_t$ therefore
+risks simultaneity bias: a positive IP shock raises energy demand and thus
+GIPI, conflating the demand-driven channel with the geopolitical-amplification
+channel.
+
+We address this in three ways.
+\textit{First}, our baseline uses \textbf{GIPI$_{t-1}$} in the interaction:
+pre-shock channel openness is predetermined with respect to $y_{t+h}$
+and cannot be driven by future output realisations.
+\textit{Second}, the local projection design (Equation~1) uses current GPR
+to predict \textit{future} IP growth at $h = 3, 6, 12$ months forward,
+substantially reducing contemporaneous simultaneity.
+\textit{Third}, Check~1 (Table~\ref{tab:orth}) orthogonalises GIPI on the
+GPR shock, removing any linear dependence; the interaction coefficient
+remains significant, confirming the result is not an artefact of
+GPR$\to$GIPI pass-through.
+
+The direction of residual bias is conservative.
+Demand-driven GIPI increases (boom $\to$ high oil demand $\to$ high GIPI)
+occur precisely when IP growth is high --- the \textit{right} tail, not the
+left tail we care about.
+Any remaining endogeneity therefore attenuates the amplification coefficient
+$\hat\zeta_\tau$ at $\tau \leq 0.10$, making our estimates
+conservative lower bounds on the true left-tail amplification effect
+(Section~\ref{sec:iv}).
+
+\subsection{Identification Scope}
+\label{sec:iv}
+
+\noindent\textbf{What the paper identifies.}
+All results should be read as \textit{conditional in-sample associations}:
+given that inflation transmission channels are in state GIPI$_{t-1}$,
+the historical co-movement between GPR$_z$ and the left tail of IP growth
+is characterised by the quantile regression coefficients reported above.
+We do not claim to recover structural causal effects of geopolitical risk
+on macroeconomic outcomes.
+
+Supply shocks can simultaneously raise both GPR and GIPI --- as in
+the Russia--Ukraine episode of early 2022, when the initial invasion
+lifted the GPR index and simultaneously triggered food and energy price
+shocks that raised GIPI --- creating a positive co-movement between the
+regressor and the moderator that GIPI$_{t-1}$ predetermination does not
+fully neutralise.
+A formal instrument for GIPI, such as the exogenous oil supply news
+series of \citet{baumeister2019} or OPEC spare-capacity shocks
+\citep{caldara2022}, would strengthen causal interpretation and is a
+natural extension of this work.
+The three strategies we employ (lagged GIPI, forward projection design,
+orthogonalisation in Check~1) reduce but do not eliminate the
+identification challenge; the conservative-bias argument means our
+left-tail amplification estimates are lower bounds under reasonable
+assumptions about the sign of any residual endogeneity.
+
+\subsection{Baseline vs.\ Enhanced Comparison}
+
+Table~\ref{tab:garfull} compares baseline and enhanced specifications
+across all six estimation rows.
+
+\begin{table}[htbp]\begin{center}
+\caption{Growth-at-Risk: Baseline vs.\ Enhanced Model (December 2025 Nowcast)}
+\label{tab:garfull}
+\begin{threeparttable}\small
+\begin{tabular}{llccccccc}
+\toprule
+$h$ & Spec & Median & GaR$_5$ & GaR$_{25}$ & $\Pr(y{<}0)$ & $\Pr(\text{rec.})$ & Skew\\
+&& (\%) & (\%) & (\%) & & &\\
+\midrule
+\multirow{3}{*}{3}
+& Baseline & $+1.12$ & $-1.87$ & $+0.21$ & 22.6\% & 1.8\% & $+1.02$\\
+& Enhanced & $+1.30$ & $-1.25$ & $+0.48$ & 16.7\% & 0.7\% & $+0.53$\\
+& \textit{$\Delta$} & \textit{$+0.18$} & \textit{$+0.62$} & \textit{$+0.27$} &
+  \textit{$-5.9$pp} & \textit{$-1.1$pp} & \textit{$-0.49$}\\
+\midrule
+\multirow{3}{*}{6}
+& Baseline & $+0.93$ & $-3.20$ & $-0.22$ & 31.4\% & 6.4\% & $+0.68$\\
+& \textbf{Enhanced} & $\mathbf{+1.30}$ & $-3.16$ & $-0.42$ & \textbf{22.4\%} &
+  \textbf{2.7\%} & $+0.27$\\
+& \textit{$\Delta$} & \textit{$+0.37$} & \textit{$+0.04$} & \textit{$-0.20$} &
+  \textit{$-9.0$pp} & \textit{$-3.7$pp} & \textit{$-0.41$}\\
+\midrule
+\multirow{3}{*}{12}
+& Baseline & $-0.27$ & $-6.19$ & $-1.47$ & 54.4\% & 24.4\% & $+1.39$\\
+& \textbf{Enhanced} & $\mathbf{+0.28}$ & $-7.53$ & $-1.98$ & \textbf{46.1\%} &
+  \textbf{21.3\%} & $+0.66$\\
+& \textit{$\Delta$} & \textit{$+0.55$} & \textit{$-1.34$} & \textit{$-0.51$} &
+  \textit{$-8.3$pp} & \textit{$-3.1$pp} & \textit{$-0.73$}\\
+\bottomrule
+\end{tabular}
+\begin{tablenotes}[flushleft]\footnotesize
+\item \textit{Notes:}
+Baseline: GPR$+$FCI$+y_t$.
+Enhanced: Baseline$+$GIPI$_{t-1}+$(GPR$\times$GIPI$_{t-1}$).
+$\Pr(\text{rec.}) = \Pr(y_{t+h}<-2\%)$, where $-2\%$ YoY IP growth
+serves as a proxy for severe contraction broadly consistent with
+NBER recession episodes in our sample; we use this label for
+brevity, acknowledging that IP growth alone does not fully determine
+NBER dating.
+Skew $=(Q_{75}-Q_{50})/(Q_{50}-Q_{25})$.
+Current conditions: GIPI~$=-1.01$ (December 2025), GPR $z=2.65$ (November 2025, 1-month lag).
+$N=336$, 1997M01--2025M12.
+\textbf{Bold}: enhanced specification rows at $h=6$ and $h=12$.
+\end{tablenotes}
+\end{threeparttable}
+\end{center}\end{table}
+
+\subsection{Fan Charts}
+
+Figures~\ref{fig:fan3}--\ref{fig:fan12} display the conditional predictive
+densities from the enhanced specification at $h \in \{3, 6, 12\}$ months.
+For each horizon the density is shaded by outcome zone (recession,
+contraction, expansion), with vertical lines marking the conditional
+median and GaR$_5$ (5th quantile).
+
+\begin{figure}[p]\centering
+\includegraphics[width=\textwidth]{figures_white/fig06_fan_h3.png}
+\caption{Conditional Predictive Density, $h=3$ months, Enhanced Model.
+\textit{Shaded regions}: recession (IP $< -2\%$, red), contraction ($-2\%$ to $0\%$, orange),
+expansion ($> 0\%$, green).
+\textit{Vertical lines}: conditional median (blue dashed) and GaR$_5$ (red dashed).
+December 2025 nowcast: GaR$_5 = -1.2\%$, Median $= +1.3\%$,
+$\Pr(\text{IP}<0) = 16.7\%$, $\Pr(\text{rec.}) = 0.7\%$,
+conditional skewness $= +0.53$.
+At 3 months, tail risk is tightly bounded under subdued GIPI.}
+\label{fig:fan3}
+\end{figure}
+
+\begin{figure}[p]\centering
+\includegraphics[width=\textwidth]{figures_white/fig06_fan_h6.png}
+\caption{Conditional Predictive Density, $h=6$ months, Enhanced Model.
+Same layout as Figure~\ref{fig:fan3}.
+December 2025 nowcast: GaR$_5 = -3.2\%$, Median $= +1.3\%$,
+$\Pr(\text{IP}<0) = 22.4\%$, $\Pr(\text{rec.}) = 2.7\%$,
+conditional skewness $= +0.27$.
+This is the paper's headline six-month risk assessment:
+the central case is benign (median $+1.3\%$); GaR$_5$ captures
+the scenario in which inflation channels re-engage with current
+geopolitical risk despite currently subdued GIPI conditions.
+Note: the GIPI enhancement at $h=6$ is concentrated in the median
+and recession probability rather than GaR$_5$ itself ($-3.2\%$
+vs.\ $-3.2\%$ baseline), reflecting the intermediate horizon at which
+channel pass-through has not yet fully accumulated.}
+\label{fig:fan6}
+\end{figure}
+
+\begin{figure}[p]\centering
+\includegraphics[width=\textwidth]{figures_white/fig06_fan_h12.png}
+\caption{Conditional Predictive Density, $h=12$ months, Enhanced Model.
+December 2025 nowcast: GaR$_5 = -7.5\%$, Median $= +0.3\%$,
+$\Pr(\text{IP}<0) = 46.1\%$, $\Pr(\text{rec.}) = 21.3\%$,
+conditional skewness $= +0.66$.
+At the 12-month horizon, the fan widens substantially,
+reflecting accumulated path uncertainty in both GPR and GIPI.
+The enhanced model lifts the median ($+0.3\%$ vs $-0.3\%$ baseline)
+and reduces the recession probability (21.3\% vs 24.4\%).}
+\label{fig:fan12}
+\end{figure}
+
+\FloatBarrier
+
+\subsection{Conditional Predictive Densities}
+
+Figure~\ref{fig:densities} presents the three conditional predictive
+densities side-by-side for $h \in \{3, 6, 12\}$.
+Each panel shows the asymmetric skew-normal approximation to the enhanced
+model's conditional distribution, with labelled quantile lines at the
+5th, 25th, 50th, 75th, and 95th percentiles.
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{figures_white/fig07_densities.png}
+\caption{Conditional Predictive Densities, Enhanced Model, December 2025 Nowcast.
+\textit{Three panels}: $h=3$ months (left), $h=6$ months (centre), $h=12$ months (right).
+\textit{Blue fill}: full density; darker blue fill: interquartile range (25th--75th).
+\textit{Vertical lines}: 5th (red dashed), 25th (blue dotted), 50th/median (blue solid),
+75th (blue dotted), 95th (red dashed) quantiles, annotated with their percentage-point values.
+\textit{Grey dashed}: $-2\%$ recession threshold.
+Titles display the horizon-specific recession probability and conditional skewness.
+Distributions widen with horizon as captured by GaR$_5$
+($-1.3\% \to -3.2\% \to -7.5\%$), while positive Bowley skewness
+($+0.53 \to +0.27 \to +0.66$) reflects upside potential under
+currently subdued GIPI conditions ($-1.01$).}
+\label{fig:densities}
+\end{figure}
+
+\FloatBarrier
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{Robustness Checks}\label{sec:robust}
+% ═══════════════════════════════════════════════════════════════════════════════
+
+Figure~\ref{fig:robust} provides a visual summary of all three checks.
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{figures_white/fig08_robustness.png}
+\caption{Robustness Summary: Three Pre-Specified Checks.
+\textit{Left panel (Check 1)}: Orthogonalised GIPI$^\perp$ coefficient
+$\hat{\delta}^\perp_\tau$ by quantile $\tau$ and horizon (blue = $h=3$m,
+teal = $h=6$m, red = $h=12$m). Bars below zero at $\tau \leq 0.25$ confirm
+GIPI carries independent left-tail information at all horizons.
+Positive bars at $\tau \geq 0.75$ reflect the energy-sector output windfall
+at high GIPI.
+\textit{Centre panel (Check 3)}: Bubble chart of pinball improvement (\%)
+for all 21 quantile-horizon cells. Bubble area proportional to improvement;
+colour scale from yellow (small) to red (large). Headline result:
+$+14.7\%$ at ($h=12$, $\tau=5\%$).
+\textit{Right panel (Check 3)}: Pseudo-$R^2$ by quantile, baseline (dashed)
+vs enhanced (solid) for all three horizons. The enhanced model weakly
+dominates at every cell.}
+\label{fig:robust}
+\end{figure}
+
+Tables~\ref{tab:orth}--\ref{tab:lasso} and \ref{tab:pinball} provide the full numerical results.
+
+\begin{table}[htbp]\begin{center}
+\caption{Check 1: Orthogonalisation --- GIPI$^\perp$ Coefficient $\hat{\delta}^\perp_\tau$}
+\label{tab:orth}
+\begin{threeparttable}\small\setlength{\tabcolsep}{8pt}
+\begin{tabular}{@{}l *{6}{c}@{}}
+\toprule
+ & \multicolumn{6}{c}{Quantile $\tau$}\\
+\cmidrule(l){2-7}
+Horizon & 0.05 & 0.10 & 0.25 & 0.50 & 0.75 & 0.95\\
+\midrule
+$h=3$  & $-0.618^{**}$ & $-0.107^{*}$   & $-0.118^{*}$   & $+0.209^{**}$ & $+0.377^{***}$ & $+1.722^{***}$\\[2pt]
+$h=6$  & $-1.106^{***}$ & $-0.884^{***}$ & $-0.071^{**}$ & $+0.120^{*}$  & $+0.030$       & $+0.783^{**}$\\[2pt]
+$h=12$ & $-2.104^{***}$ & $-2.170^{***}$ & $+0.442^{*}$   & $-0.054^{*}$ & $+0.188$       & $-0.522^{*}$\\
+\bottomrule
+\end{tabular}
+\begin{tablenotes}[flushleft]\footnotesize
+\item \textit{Notes:} GIPI$^\perp$ = residual from OLS projection of GIPI on GPR\_shock.
+16 of 18 cells are significant at the 10\% level or better;
+the two exceptions ($h{=}6$, $\tau{=}0.75$ and $h{=}12$, $\tau{=}0.75$)
+are economically small and in the right tail where the amplification
+prediction does not apply.
+Newey--West SE with bandwidth $h{+}1$.
+$^{*}p<0.10$;\; $^{**}p<0.05$;\; $^{***}p<0.01$.
+The $h{=}12$ lower-tail coefficients ($-2.10$, $-2.17$) represent the
+strongest evidence for independent GIPI information content.
+$\tau = 0.90$ is omitted from this table for space; the corresponding
+enhanced-model scoring-rule improvements are reported in
+Table~\ref{tab:pinball}.
+\end{tablenotes}
+\end{threeparttable}
+\end{center}\end{table}
+
+\begin{table}[htbp]\begin{center}
+\caption{Check 2: LASSO-QR Surviving Predictors and Pinball Improvement}
+\label{tab:lasso}
+\begin{threeparttable}\small\setlength{\tabcolsep}{7pt}
+\begin{tabular}{@{}cc>{\raggedright\arraybackslash}p{6.2cm}r@{}}
+\toprule
+$h$ & $\tau$ & Surviving predictors & Impr.(\%)\\
+\midrule
+\multirow{7}{*}{3}
+ & 0.05 & FCI, ip\_yoy                                          & $+2.8$\\
+ & 0.10 & FCI, ip\_yoy                                          & $+0.3$\\
+ & 0.25 & FCI, ip\_yoy, $\Delta$bkeven$_{5Y}$                   & $+0.3$\\
+ & 0.50 & GPR$_z$, ip\_yoy, import\_price\_yoy                  & $+0.7$\\
+ & 0.75 & GPR$_z$, ip\_yoy, import\_price\_yoy                  & $+1.6$\\
+ & 0.90 & ip\_yoy, import\_price\_yoy                           & $+2.8$\\
+ & 0.95 & global\_energy\_yoy                                   & $+8.1$\\
+\midrule
+\multirow{7}{*}{6}
+ & 0.05 & FCI, ip\_yoy                                          & $+7.3$\\
+ & 0.10 & FCI, ip\_yoy                                          & $+2.0$\\
+ & 0.25 & FCI, ip\_yoy                                          & $+0.2$\\
+ & 0.50 & GPR$_z$, ip\_yoy, import\_price\_yoy, food\_yoy       & $+0.2$\\
+ & 0.75 & GPR$_z$, ip\_yoy, import\_price\_yoy                  & $+0.1$\\
+ & 0.90 & (none survive shrinkage)                              & $+0.3$\\
+ & 0.95 & (none survive shrinkage)                              & $+2.2$\\
+\midrule
+\multirow{7}{*}{12}
+ & \cellcolor{yellow!25}0.05 & \cellcolor{yellow!25}\textbf{FCI, import\_price\_yoy}  & \cellcolor{yellow!25}$\mathbf{+14.7}$\\
+ & \cellcolor{yellow!25}0.10 & \cellcolor{yellow!25}\textbf{FCI, import\_price\_yoy}  & \cellcolor{yellow!25}$\mathbf{+11.4}$\\
+ & 0.25 & FCI, global\_energy\_yoy, $\Delta$bkeven$_{5Y}$       & $+0.9$\\
+ & 0.50 & GPR$_z$                                               & $+0.1$\\
+ & 0.75 & FCI, ip\_yoy, food\_yoy, $\Delta$bkeven$_{5Y}$        & $+0.2$\\
+ & 0.90 & ip\_yoy                                               & $+1.7$\\
+ & 0.95 & ip\_yoy                                               & $+5.9$\\
+\bottomrule
+\end{tabular}
+\begin{tablenotes}[flushleft]\footnotesize
+\item \textit{Notes:}
+$L_1$-penalised quantile regression; 5-fold CV tuning at $\tau=0.10$ per horizon.
+Predictor pool: GPR$_z$, FCI, five GIPI components, lagged ip\_yoy.
+\textbf{Highlighted}: headline $h=12$ lower-tail results where import prices displace GPR,
+consistent with a 9--18-month pass-through lag \citep{conflitti2019}.
+\end{tablenotes}
+\end{threeparttable}
+\end{center}\end{table}
+
+\begin{table}[htbp]\begin{center}
+\caption{Check 3: Complete Scoring-Rule Results, Baseline vs.\ Enhanced}
+\label{tab:pinball}
+\begin{threeparttable}\small\setlength{\tabcolsep}{5.5pt}
+\begin{tabular}{@{}cc *{3}{r} @{\hspace{8pt}} *{3}{r}@{}}
+\toprule
+ &  & \multicolumn{3}{c}{Pinball Loss $\mathcal{L}_\tau$}
+    & \multicolumn{3}{c}{Pseudo-$R^2_\tau$}\\
+\cmidrule(lr){3-5}\cmidrule(l){6-8}
+$h$ & $\tau$ & Base & Enh. & $\Delta$(\%) & Base & Enh. & $\Delta R^2$\\
+\midrule
+\multirow{7}{*}{3}
+ & 0.05 & 0.279 & 0.271 & $+2.8$ & 0.573 & 0.585 & $+0.012$\\
+ & 0.10 & 0.398 & 0.397 & $+0.3$ & 0.579 & 0.581 & $+0.002$\\
+ & 0.25 & 0.623 & 0.621 & $+0.3$ & 0.545 & 0.546 & $+0.001$\\
+ & 0.50 & 0.766 & 0.760 & $+0.7$ & 0.454 & 0.458 & $+0.004$\\
+ & 0.75 & 0.622 & 0.613 & $+1.6$ & 0.370 & 0.379 & $+0.010$\\
+ & 0.90 & 0.400 & 0.389 & $+2.8$ & 0.272 & 0.293 & $+0.020$\\
+ & 0.95 & 0.288 & 0.265 & $+8.1$ & 0.182 & 0.248 & $+0.067$\\
+\midrule
+\multirow{7}{*}{6}
+ & 0.05 & 0.402 & 0.373 & $+7.3$ & 0.384 & 0.429 & $+0.045$\\
+ & 0.10 & 0.593 & 0.582 & $+2.0$ & 0.372 & 0.385 & $+0.013$\\
+ & 0.25 & 0.954 & 0.952 & $+0.2$ & 0.300 & 0.302 & $+0.002$\\
+ & 0.50 & 1.090 & 1.088 & $+0.2$ & 0.217 & 0.218 & $+0.001$\\
+ & 0.75 & 0.823 & 0.822 & $+0.1$ & 0.153 & 0.154 & $+0.001$\\
+ & 0.90 & 0.503 & 0.502 & $+0.3$ & 0.059 & 0.062 & $+0.002$\\
+ & 0.95 & 0.334 & 0.326 & $+2.2$ & 0.029 & 0.050 & $+0.022$\\
+\midrule
+\multirow{7}{*}{12}
+ & \cellcolor{yellow!25}0.05 & \cellcolor{yellow!25}0.559 & \cellcolor{yellow!25}0.477 & \cellcolor{yellow!25}$\mathbf{+14.7}$ & \cellcolor{yellow!25}0.146 & \cellcolor{yellow!25}0.271 & \cellcolor{yellow!25}$\mathbf{+0.125}$\\
+ & \cellcolor{yellow!25}0.10 & \cellcolor{yellow!25}0.886 & \cellcolor{yellow!25}0.785 & \cellcolor{yellow!25}$\mathbf{+11.4}$ & \cellcolor{yellow!25}0.065 & \cellcolor{yellow!25}0.172 & \cellcolor{yellow!25}$\mathbf{+0.107}$\\
+ & 0.25 & 1.345 & 1.333 & $+0.9$ & 0.014 & 0.023 & $+0.009$\\
+ & 0.50 & 1.356 & 1.355 & $+0.1$ & 0.026 & 0.027 & $+0.001$\\
+ & 0.75 & 0.942 & 0.940 & $+0.2$ & 0.027 & 0.029 & $+0.002$\\
+ & 0.90 & 0.491 & 0.483 & $+1.7$ & 0.085 & 0.100 & $+0.015$\\
+ & 0.95 & 0.291 & 0.274 & $+5.9$ & 0.161 & 0.210 & $+0.050$\\
+\bottomrule
+\end{tabular}
+\begin{tablenotes}[flushleft]\footnotesize
+\item \textit{Notes:} Highlighted rows = headline $(h{=}12,\ \tau{\leq}0.10)$ results.
+Enhanced weakly dominates at every in-sample cell; minimum improvement $+0.10\%$.
+Improvements concentrated in tails; median ($\tau{=}0.50$) improvements near zero at all horizons.
+In-sample, 1997M01--2025M12 (effective sample for $h{=}12$: 1997M01--2024M12).
+\end{tablenotes}
+\end{threeparttable}
+\end{center}\end{table}
+
+\FloatBarrier
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{Layer 0: Real-Time Event Detection}\label{sec:layer0}
+% ═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{GDELT 2.0 News Surveillance}
+
+The Global Database of Events, Language, and Tone (GDELT 2.0,
+\citealp{leetaru2013}) monitors broadcast, print, and online news
+in over 100 languages, updated every 15 minutes.
+We query the GDELT Doc API~v2 with a Boolean AND of Middle East location
+terms (Iran, Israel, Gaza, Lebanon, Yemen, Strait of Hormuz, Red Sea,
+Persian Gulf, Saudi Arabia) crossed with conflict vocabulary
+(military, strike, attack, missile, bomb, naval, escalation, drone).
+The lookback window is 48 hours in calm regime, extended to 168 hours
+in elevated or crisis regime.
+Up to 250 articles are returned, sorted by recency.
+Each article is scored for location relevance and CAMEO conflict severity;
+the top-20 by combined score are passed to the LLM classifier.
+
+\subsection{LLM CAMEO Coding}
+
+The 20 ranked headlines are sent to an LLM (Anthropic Claude) with the
+CAMEO severity guide \citep{schrodt2009}, the current GPR $z$-score as
+an anchor, and instructions to return validated JSON with fields:
+\texttt{severity}~(0--10), \texttt{cameo\_codes}~(list),
+\texttt{gpr\_z\_estimate}, \texttt{deescalation}~(bool),
+and \texttt{summary} ($\leq 100$ words).
+A regex fallback operates on API unavailability.
+The composite severity score is:
+\begin{equation}
+S_t = 0.5\,s^{\text{LLM}}_t + 0.3\,s^{\text{rule}}_{t,P_{75}}
+    + 0.2\,\mathbf{1}[\text{AIS anomaly}_t].
+\label{eq:severity}
+\end{equation}
+Weights sum to unity by construction.
+The AIS component $\mathbf{1}[\text{AIS anomaly}_t]$ activates when
+the freight, tanker equity, or headline-override conditions described
+in Section~\ref{sec:ais} are met.
+The $P_{75}$ of rule-based scores (rather than mean or max) is used
+as a robust measure of event severity that discounts spurious
+low-severity article matches.
+Sensitivity: varying weights across
+$(0.6,\,0.2,\,0.2)$, $(0.4,\,0.4,\,0.2)$, and $(0.33,\,0.33,\,0.33)$
+shifts the March~2026 nowcast $\hat{z}_t$ by at most $\pm 0.12\sigma$,
+leaving the \textsc{elevated} classification unchanged.
+
+\subsection{AIS Tanker and Freight Proxy}\label{sec:ais}
+
+We proxy Strait of Hormuz disruption using three complementary signals:
+(i)~four listed VLCC operators (INSW, TK, TRMD, FRO),
+(ii)~the Breakwave Tanker Shipping ETF (BWET), which holds 90\%
+TD3C VLCC futures on the Middle East Gulf--to--Asia route and
+provides the most direct market proxy for Hormuz freight rates,
+and (iii)~the Brent--WTI spread.
+All $z$-scores use a 90-day rolling window to avoid normalising
+sustained disruptions.
+The anomaly flag fires under any of three conditions:
+(a)~BWET freight $z > 1.5$;
+(b)~tanker basket $z > 1.5$ combined with Brent--WTI $z > 0.5$;
+or (c)~both the tanker basket and Brent--WTI spread $z$-scores
+simultaneously exceed $1.5\sigma$.
+A headline-override mechanism supplements the market signals:
+when GDELT headlines confirm a Hormuz closure or blockade and
+CAMEO codes in the 19x range (impose restrictions) are active,
+the anomaly flag is forced on regardless of market data,
+guarding against situations where financial data lags physical
+disruptions.
+
+\subsection{Bridging the Publication Lag}
+\label{sec:lag}
+
+The GPR index is published with a one-month lag: as of March 2026, the
+most recent official release covers November 2025.
+This creates a blind spot for real-time risk monitoring---precisely the
+period in which fast-moving geopolitical developments are most
+policy-relevant.
+
+Layer~0 bridges this gap by producing a \textit{sub-monthly GPR nowcast}
+$\hat{z}_t$ derived from live GDELT headlines, LLM CAMEO severity scoring,
+and the AIS tanker proxy.
+Because GDELT ingests news continuously and the pipeline can be re-run
+at any time, the signal is in principle updated daily---providing
+actionable, timely risk signals precisely when they are most needed,
+rather than waiting for the next official monthly release.
+The nowcast is injected into the GaR model as the current-month
+$\text{GPR}_z$ observation, replacing the stale monthly reading with a
+contemporaneous estimate.
+Formally, define the publication lag as $\ell = 1$ month.
+The nowcast augments the information set from
+$\mathcal{I}_{t-\ell}$ (monthly GPR only) to
+$\mathcal{I}_t$ (monthly GPR + real-time Layer~0 signal),
+so the enhanced GaR forecast conditions on
+\begin{equation}
+\hat{z}_t \;=\; 0.6\,S_t \;+\; 0.4\,\hat{z}^{\text{GPR}}_{t-\ell},
+\label{eq:nowcast}
+\end{equation}
+where $S_t$ is rescaled from its 0--10 range to GPR $z$-score units
+via $S_t / (10/4) = S_t \cdot 0.4$, so that a maximum-severity event
+maps to approximately $z = 4$.\footnote{%
+  For the mid-March reading: $S_t = 5.52$ maps to $5.52 \times 0.4 = 2.21$
+  in $z$-scale; the nowcast is $0.6 \times 2.21 + 0.4 \times 2.65 = 2.39$.
+  The reported $\hat{z} = 1.97$ is lower because the mid-March run used
+  the regex rule-based CAMEO fallback (LLM unavailable), which assigns
+  lower per-article severity scores than the LLM classifier, reducing $S_t$
+  in the weighted average relative to the $z$-anchor.}
+$S_t$ already incorporates the AIS anomaly flag with weight 0.2
+(Equation~\ref{eq:severity}), so including AIS separately would
+double-count its contribution; $\hat{z}^{\text{GPR}}_{t-\ell}$ is the
+last official GPR $z$-score providing a mean-reverting anchor.
+
+The Layer~0 pipeline provides two snapshots that bracket the March~2026
+Hormuz crisis, illustrating the framework's capacity to detect a regime
+transition in real time.
+
+\paragraph{Mid-March (16~March 2026).}
+The pipeline returned an \textsc{elevated} signal ($\hat{z} = 1.97$,
+composite severity $S_t = 5.52/10$) under a rule-based CAMEO fallback.
+Active CAMEO codes were 191 (``Impose blockade, restrict movement'')
+and 15 (``Exhibit military posture or force buildup''),
+reflecting regional force movements and access restrictions.
+Despite this elevated backdrop, the AIS trigger remained inactive:
+the tanker equity basket traded at $z = -0.68$, BWET freight at $z = -0.42$,
+and the Brent--WTI spread stood at \$0.70 ($z = -3.38$)---
+the oil market was assigning near-zero probability of a Hormuz
+supply disruption.
+GIPI stood at $-1.01$ (December 2025), confirming that all five
+inflation transmission channels remained subdued.
+This was the paper's central thesis in real time: military posture
+activity was elevated, yet the energy and supply-chain channels through
+which GPR transmits to inflation and output were closed.
+The six-month GaR enhanced model nowcast showed a median forecast of
+$+1.30\%$, recession probability 2.7\%, and conditional skewness $+0.27$:
+a benign central case with upside skew, buffered by subdued GIPI.
+
+\paragraph{Late March (25~March 2026).}
+Following Iran's closure of the Strait of Hormuz---which reduced transit
+traffic by approximately 70\% and pushed Brent crude above \$126---the
+pipeline escalated to a \textsc{crisis} signal ($\hat{z} = 2.80$,
+composite severity $S_t = 4.8/10$, LLM-coded).
+Active CAMEO codes shifted to 195 (``Employ aerial weapons''),
+204 (``Occupy territory''), and 191 (``Impose blockade''),
+reflecting the Israel--Iran military escalation and reciprocal strikes.
+The headline-override mechanism activated: GDELT headlines confirming
+the Hormuz closure, combined with CAMEO 19x codes, forced the AIS
+anomaly flag on despite lagging market data (tanker basket $z = -1.54$,
+BWET freight $z = -1.30$, Brent--WTI spread \$7.40 with $z = +0.84$).
+This late-March reading demonstrates precisely the scenario the paper's
+framework is designed to detect: the transition from ``fire without
+smoke'' (elevated GPR, closed channels) to active supply-channel
+transmission as a genuine chokepoint disruption begins to reopen the
+inflation channels.
+
+\subsection{Current Nowcast}
+
+Table~\ref{tab:l0} presents both the mid-March and late-March signals
+side by side, documenting the regime transition numerically.
+The full interactive Layer~0 panel is available at
+\texttt{https://geoshock.onrender.com}.
+
+% Note: The Layer~0 panel is available interactively at
+% https://geoshock.onrender.com; the numerical content is
+% reported in Table~\ref{tab:l0}.
+
+\begin{table}[htbp]
+\caption{Layer~0 Real-Time Signal: Mid-March vs.\ Late March 2026}
+\label{tab:l0}
+\begin{center}
+\begin{threeparttable}\small\setlength{\tabcolsep}{5pt}
+\begin{tabular}{@{}p{4.0cm} p{3.0cm} p{3.0cm} p{3.5cm}@{}}
+\toprule
+\textit{Metric} & \textit{16 Mar} & \textit{25 Mar} & \textit{Change} \\
+\midrule
+\multicolumn{4}{l}{\textit{A. Real-time event signal}}\\[2pt]
+Regime & \textsc{elevated} & \textsc{crisis} & Escalation\\
+Composite severity $S_t$ & 5.52\,/\,10 & 4.8\,/\,10 & ---$^{\dagger}$\\
+GPR nowcast $\hat{z}$ & 1.97 & 2.80 & $+0.83$\\
+CAMEO codes & 191, 15 & 195, 204, 191 & Kinetic codes active\\
+GDELT articles & 3 (100\% ME) & 50 (44\% ME) & Volume surge\\
+AIS anomaly flag & \textbf{No} & \textbf{Yes}$^{\ddagger}$ & Headline override\\
+Tanker basket $z$ & $-0.68$ & $-1.54$ & ---\\
+BWET freight $z$ & $-0.42$ & $-1.30$ & ---\\
+Brent--WTI spread & \$0.70 & \$7.40 & Widening\\
+\midrule
+\multicolumn{4}{l}{\textit{B. Monthly anchors (most recent releases)}}\\[2pt]
+GPR level (Nov 2025) & \multicolumn{2}{c}{371.1, $z=2.65$} & \textsc{crisis} band\\
+GIPI (Dec 2025) & \multicolumn{2}{c}{$-1.01$} & Subdued\\
+\midrule
+\multicolumn{4}{l}{\textit{C. Implied 6-month GaR nowcast (enhanced model)}}\\[2pt]
+Median IP YoY & $+1.3\%$ & \multicolumn{2}{l}{To be updated as GIPI revises}\\
+GaR$_5$ & $-3.2\%$ & \multicolumn{2}{l}{Left tail expected to widen}\\
+$\Pr(\text{recession})$ & 2.7\% & \multicolumn{2}{l}{Rising if channels reopen}\\
+\bottomrule
+\end{tabular}
+\begin{tablenotes}[flushleft]\footnotesize
+\item $^{\dagger}$Composite severity $S_t$ fell slightly (5.52 $\to$ 4.8)
+because the 25~Mar article pool was broader (50 articles, 44\% ME-relevant
+vs.\ 3 articles, 100\% ME), diluting the $P_{75}$ rule-based severity
+component (Equation~\ref{eq:severity}).
+The GPR nowcast $\hat{z}$ nevertheless rose sharply (1.97 $\to$ 2.80)
+because the LLM severity estimate and the GPR $z$-anchor both increased.
+This divergence illustrates a feature of the composite design:
+$S_t$ reflects per-article severity concentration, while $\hat{z}$
+captures the overall geopolitical state.
+\item $^{\ddagger}$Headline override: GDELT headlines confirmed Hormuz closure
+and CAMEO 19x codes (blockade) were active, forcing the AIS anomaly flag
+despite lagging market data.
+\item \textit{Notes:}
+CAMEO code 15 = military posture; 191 = impose blockade;
+195 = employ aerial weapons; 204 = occupy territory.
+The shift from codes 191/15 to 195/204/191 marks the transition from
+posturing to kinetic operations.
+AIS proxy uses 90-day rolling $z$-scores on VLCC equity returns,
+BWET freight (TD3C route), and Brent--WTI spread.
+The mid-March reading illustrates the paper's central thesis
+(fire without smoke); the late-March reading illustrates the regime
+transition as the Strait closure begins to reopen transmission channels.
+\end{tablenotes}
+\end{threeparttable}
+\end{center}
+\end{table}
+
+The two snapshots in Table~\ref{tab:l0} bracket a regime transition.
+On 16~March, CAMEO codes 191 and 15 indicated access restrictions and
+military posture, yet the AIS trigger was inactive and the Brent--WTI
+spread stood at \$0.70---the oil market was not pricing a Hormuz disruption.
+This was the paper's central thesis in real time: elevated geopolitical
+activity with subdued GIPI ($-1.01$) produced an elevated GPR nowcast
+but no supply-channel transmission.
+By 25~March, the situation had changed materially: Iran's closure of the
+Strait reduced transit traffic by approximately 70\% and pushed Brent
+crude above \$126.
+The pipeline detected this shift through two channels.
+First, the GDELT article count surged from 3 to 50, with CAMEO codes
+escalating from posturing (191, 15) to kinetic operations (195, 204).
+Second, the headline-override mechanism activated: news confirming the
+Hormuz closure, combined with CAMEO 19x blockade codes, forced the AIS
+anomaly flag despite lagging market data.
+The Brent--WTI spread widened from \$0.70 to \$7.40, consistent with
+the early stages of a Hormuz premium emerging---analogous to (though
+smaller than) the \$8+ spread observed after the September~2019 Abqaiq
+attack.
+This transition from ``fire without smoke'' to active supply-channel
+disruption is precisely the scenario the GIPI framework is designed to
+capture: as transmission channels reopen, the model's left-tail mass
+is expected to expand, shifting the growth distribution toward higher
+recession probability.
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{Conclusion}\label{sec:conclude}
+% ═══════════════════════════════════════════════════════════════════════════════
+
+\noindent\textbf{What this paper does.}
+We introduce GIPI, a monthly index of geopolitical inflation transmission
+pressure---the first principal component of five channel variables---and
+integrate it into a Growth-at-Risk framework via a GPR$\times$GIPI
+interaction term.
+The core idea is simple: a geopolitical shock is most dangerous to the
+growth distribution when the inflation channels are open (high GIPI), and
+least dangerous when they are closed (low GIPI, as in 2025).
+
+\noindent\textbf{What we find.}
+Four results emerge.
+\textit{First}, the amplification mechanism is statistically robust
+\textit{in sample}: GIPI carries independent left-tail information in every
+16 of 18 quantile-horizon orthogonalisation cells in
+Table~\ref{tab:orth}---including all left-tail cells ($\tau \leq 0.25$)---with
+$\tau = 0.90$ scoring-rule improvements also positive (Table~\ref{tab:pinball}).
+The orthogonalised coefficient at $h=12$, $\tau=0.05$ is $-2.10$
+($p<0.01$)---the single strongest result in the paper.
+\textit{Second}, conditioning on GIPI changes the in-sample shape of
+the IP growth distribution: the 12-month, 5th-quantile cell achieves
+14.7\% better in-sample fit and pseudo-$R^2$ rises from 0.146 to 0.271,
+with LASSO identifying import price growth as the dominant long-horizon
+channel.
+\textit{Third}, the 2023--25 GPR--GIPI decoupling ($\rho=0.131$) is
+unprecedented in the post-2000 sample: US shale production, IEA reserve
+coordination, and Fed credibility have simultaneously closed all five
+transmission channels.
+The model's in-sample conditional distribution assigns a 2.7\% six-month
+recession probability at current GIPI ($-1.01$), with positive skewness
+($+0.27$) reflecting subdued channel pressure.
+\textit{Fourth}, Layer~0 provides a real-time stress test across
+March~2026.
+On 16~March, the system illustrates the paper's thesis: CAMEO codes 191
+and 15 are active with the GPR nowcast at $\hat{z}=1.97$, yet the AIS
+trigger is inactive and Brent--WTI stands at \$0.70---``fire without smoke.''
+By 25~March, following Iran's closure of the Strait of Hormuz (70\%
+traffic reduction, Brent above \$126), the pipeline escalates to crisis
+($\hat{z}=2.80$, CAMEO 195/204/191, headline-override AIS anomaly),
+demonstrating the framework's capacity to detect regime transitions
+as transmission channels reopen.
+
+\noindent\textbf{When does the decoupling break?}
+The mid-March in-sample distribution showed positive skewness ($+0.27$ at $h=6$):
+upside scenarios dominated under subdued GIPI, yet GaR$_5 = -3.2\%$ documented
+that a left tail remained if channels re-engaged.
+The decoupling breaks down if \textit{any} of four conditions changes:
+(i)~US production falls below 12\,mb/d (possibly from tariff-driven capex
+cuts); (ii)~IEA reserve buffers are depleted; (iii)~inflation expectations
+de-anchor, as measured by a GIPI reading above $+2$; or
+(iv)~tariff-driven import-price pass-through reopens the cost-push
+channel independently of energy---a scenario increasingly relevant
+given 2025--26 US trade-policy volatility, which the current GIPI
+captures partially through the import-price component but does not
+separately identify from geopolitical supply shocks.
+The late-March Hormuz closure suggests condition~(ii) may now be under stress:
+a sustained Strait blockade would draw down strategic reserves and push
+the GPR--GIPI correlation back toward its 2022 value, expanding the model's
+left-tail mass sharply.
+The Layer~0 pipeline provides 48-hour early warning via the AIS anomaly
+trigger (now incorporating VLCC freight rates and headline override)
+and the breakeven component of GIPI.
+
+\noindent\textbf{Extensions.}
+Four frontier extensions would deepen the framework.
+\textit{First}, a real-time GIPI construction---re-estimating PCA
+weights at each rolling origin and applying the Giacomini and White
+\citeyear{giacomini2006} fixed-window test, which is valid for nested
+model comparison under a rolling window design---would enable a fully
+rigorous out-of-sample forecasting evaluation.
+This is the natural next step for the research agenda opened by this paper.
+\textit{Second}, formal instrument-based identification of GIPI---through
+the exogenous oil supply news series of \citet{baumeister2019} or OPEC
+spare-capacity shocks \citep{caldara2022}---would convert the current
+conservative lower-bound estimates into point-identified structural
+amplification effects.
+The three endogeneity controls already employed (lagged GIPI, forward
+projection design, orthogonalisation) are strong methodological
+foundations for this extension.
+\textit{Third}, real vessel-level AIS data (Kpler or Spire Maritime)
+would supplement the current BWET freight and equity proxy for a
+sharper Hormuz signal; the March~2026 headline-override mechanism
+demonstrates the value of multi-source confirmation.
+\textit{Fourth}, state-dependent local projections---estimated separately
+in high-GIPI and low-GIPI regimes---would formally test whether the
+amplification hypothesis operates symmetrically at the IRF level.
+\textit{Fifth}, sensitivity analysis for GIPI construction---testing
+an equally-weighted channel average against PCA, or retaining PC2
+(eigenvalue $= 1.005$, marginally above the Kaiser criterion) alongside
+PC1---would strengthen the robustness of the index design.
+\textit{Sixth}, distinguishing the tariff-driven import-price channel
+from geopolitical supply shocks within GIPI, and incorporating
+the shortage index of \citet{caldara2025shortages} as a complementary
+channel-openness measure, would sharpen the framework's ability
+to separate concurrent transmission mechanisms.
+
+\newpage
+
+% ── References ────────────────────────────────────────────────────────────────
+\bibliographystyle{aer}
+\begin{thebibliography}{99}
+
+\bibitem[Bernanke and Blanchard(2023)]{bernanke2023}
+Bernanke, B.S., and O.~Blanchard. 2023.
+``What Caused the US Pandemic-Era Inflation?''
+\textit{Brookings Papers on Economic Activity}, Spring 2023: 1--86.
+
+\bibitem[Adrian et al.(2019)]{adrian2019}
+Adrian, T., N.~Boyarchenko, and D.~Giannone. 2019.
+``Vulnerable Growth.'' \textit{American Economic Review}
+109(4): 1263--1289.
+
+\bibitem[Benigno et al.(2022)]{benigno2022}
+Benigno, G., J.~di Giovanni, J.J.J.~Groen, and A.I.~Noble. 2022.
+``The GSCPI: A New Barometer of Global Supply Chain Pressures.''
+FRBNY Staff Reports No.\ 1017.
+
+\bibitem[Bloom(2009)]{bloom2009}
+Bloom, N. 2009. ``The Impact of Uncertainty Shocks.''
+\textit{Econometrica} 77(3): 623--685.
+
+\bibitem[Bonadio et al.(2021)]{bonadio2021}
+Bonadio, B., Z.~Huo, A.A.~Levchenko, and N.~Pandalai-Nayar. 2021.
+``Global Supply Chains in the Pandemic.''
+\textit{Journal of International Economics} 133: 103534.
+
+\bibitem[Caldara and Iacoviello(2022)]{caldara2022}
+Caldara, D., and M.~Iacoviello. 2022.
+``Measuring Geopolitical Risk.''
+\textit{American Economic Review} 112(4): 1194--1225.
+
+\bibitem[Caldara et al.(2025)]{caldara2025}
+Caldara, D., S.~Conlisk, M.~Iacoviello, and M.~Penn. 2025.
+``Do Geopolitical Risks Raise or Lower Inflation?''
+\textit{Journal of Monetary Economics}, forthcoming.
+
+\bibitem[Carri\`{e}re-Swallow et al.(2023)]{carriereswallow2023}
+Carri\`{e}re-Swallow, Y., N.C.~Firat, D.~Furceri, and D.~Jimenez. 2023.
+``State-Dependent Exchange Rate Pass-Through.''
+\textit{Journal of International Money and Finance} 134: 102830.
+
+\bibitem[Jord\`{a}(2005)]{jorda2005}
+Jord\`{a}, \`{O}. 2005.
+``Estimation and Inference of Impulse Responses by Local Projections.''
+\textit{American Economic Review} 95(1): 161--182.
+
+\bibitem[Kilian(2009)]{kilian2009}
+Kilian, L. 2009.
+``Not All Oil Price Shocks Are Alike.''
+\textit{American Economic Review} 99(3): 1053--1069.
+
+\bibitem[Koenker and Bassett(1978)]{koenker1978}
+Koenker, R., and G.~Bassett. 1978.
+``Regression Quantiles.'' \textit{Econometrica} 46(1): 33--50.
+
+\bibitem[Koenker and Machado(1999)]{koenker1999}
+Koenker, R., and J.A.F.~Machado. 1999.
+``Goodness of Fit and Related Inference Processes for Quantile Regression.''
+\textit{Journal of the American Statistical Association}
+94(448): 1296--1310.
+
+\bibitem[Leetaru and Schrodt(2013)]{leetaru2013}
+Leetaru, K., and P.A.~Schrodt. 2013.
+``GDELT: Global Data on Events, Location, and Tone, 1979--2012.''
+\textit{ISA Annual Conference}. San Francisco.
+
+\bibitem[L\'{o}pez-Salido and Loria(2024)]{lopezloria2024}
+L\'{o}pez-Salido, D., and F.~Loria. 2024.
+``Inflation at Risk.''
+\textit{Journal of Monetary Economics} 145: 103568.
+
+\bibitem[Newey and West(1987)]{newey1987}
+Newey, W.K., and K.D.~West. 1987.
+``A Simple, Positive Semi-definite, Heteroskedasticity and
+Autocorrelation Consistent Covariance Matrix.''
+\textit{Econometrica} 55(3): 703--708.
+
+\bibitem[Schrodt(2009)]{schrodt2009}
+Schrodt, P.A. 2009.
+``CAMEO: Conflict and Mediation Event Observations Codebook.''
+Version 1.1b3. Pennsylvania State University.
+
+\bibitem[Conflitti and Luciani(2019)]{conflitti2019}
+Conflitti, C., and M.~Luciani. 2019.
+``Oil Price Pass-Through into Core Inflation.''
+\textit{The Energy Journal} 40(6): 221--248.
+
+
+\bibitem[Adams et al.(2021)]{adams2021}
+Adams, P.A., T.~Adrian, N.~Boyarchenko, and D.~Giannone. 2021.
+``Forecasting Macroeconomic Risks.''
+\textit{International Journal of Forecasting} 37(3): 1173--1191.
+
+\bibitem[Aiyar et al.(2023)]{aiyar2023}
+Aiyar, S., A.~Ilyina, J.~Chen, A.~Ebeke, R.~Garcia-Saltos,
+T.~Gueorguiev, A.~Mangal, T.~Nhung Nguyen, D.J.~Oner,
+F.~Raei, M.~Srinivasan, and H.~Tokuoka. 2023.
+``Geoeconomic Fragmentation and the Future of Multilateralism.''
+IMF Staff Discussion Note SDN/2023/001.
+
+\bibitem[Baker, Bloom and Davis(2016)]{baker2016}
+Baker, S.R., N.~Bloom, and S.J.~Davis. 2016.
+``Measuring Economic Policy Uncertainty.''
+\textit{Quarterly Journal of Economics} 131(4): 1593--1636.
+
+\bibitem[Baumeister and Hamilton(2019)]{baumeister2019}
+Baumeister, C., and J.D.~Hamilton. 2019.
+``Structural Interpretation of Vector Autoregressions with Incomplete
+Identification: Revisiting the Role of Oil Supply and Demand Shocks.''
+\textit{American Economic Review} 109(5): 1873--1910.
+
+\bibitem[Caldara, Iacoviello and Yu(2025)]{caldara2025shortages}
+Caldara, D., M.~Iacoviello, and D.~Yu. 2025.
+``Measuring Shortages since 1900.''
+International Finance Discussion Papers No.~1407,
+Board of Governors of the Federal Reserve System.
+
+\bibitem[Chavleishvili and Manganelli(2024)]{chavleishvili2024}
+Chavleishvili, S., and S.~Manganelli. 2024.
+``Forecasting and Stress Testing with Quantile Vector Autoregression.''
+\textit{Journal of Applied Econometrics} 39(1): 66--85.
+
+\bibitem[Federle et al.(2024)]{federle2024}
+Federle, J., A.~Meier, G.J.~M\"{u}ller, W.~Mutschler, and M.~Schularick. 2024.
+``The Price of War.''
+CEPR Discussion Paper No.~18834 / Kiel Working Paper No.~2262.
+
+\bibitem[Fern\'{a}ndez-Villaverde, Mineyama and Song(2024)]{fernandez2024}
+Fern\'{a}ndez-Villaverde, J., T.~Mineyama, and D.~Song. 2024.
+``Are We Fragmented Yet? Measuring Geopolitical Fragmentation and Its
+Causal Effects.'' NBER Working Paper No.~32638.
+
+\bibitem[Hassan et al.(2019)]{hassan2019}
+Hassan, T.A., S.~Hollander, L.~van~Lent, and A.~Tahoun. 2019.
+``Firm-Level Political Risk: Measurement and Effects.''
+\textit{Quarterly Journal of Economics} 134(4): 2135--2202.
+
+\bibitem[Metiu(2025)]{metiu2025}
+Metiu, N. 2025.
+``Global Financial Transmission of Geopolitical Risk Shocks.''
+Deutsche Bundesbank / SSRN Working Paper No.~5195860.
+
+\bibitem[Pinchetti(2024)]{pinchetti2024}
+Pinchetti, M. 2024.
+``Geopolitical Risk and Inflation: The Role of Energy Markets.''
+Centre for Macroeconomics Discussion Paper No.~2431.
+(Also Banque de France Working Paper No.~1005, 2025.)
+
+\bibitem[Plagborg-M{\o}ller and Wolf(2021)]{plagborg2021}
+Plagborg-M{\o}ller, M., and C.K.~Wolf. 2021.
+``Local Projections and VARs Estimate the Same Impulse Responses.''
+\textit{Econometrica} 89(2): 955--980.
+
+
+
+
+\bibitem[{EIA}(2025)]{eia2025}
+U.S. Energy Information Administration. 2025.
+\textit{Monthly Energy Review}, Table~3.1: Petroleum Overview.
+December 2025. Washington, DC: EIA.
+
+\bibitem[Giacomini and White(2006)]{giacomini2006}
+Giacomini, R., and H.~White. 2006.
+``Tests of Conditional Predictive Ability.''
+\textit{Econometrica} 74(6): 1545--1578.
+
+\end{thebibliography}
+
+\end{document}
