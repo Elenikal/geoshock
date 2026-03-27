@@ -29,3 +29,7 @@ __pycache__/
 
 # PyCharm
 .idea/
+
+# Paper and blog post (not for public repo)
+geoshock_paper.*
+linkedin_post.md
