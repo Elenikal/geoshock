@@ -670,11 +670,15 @@ class EventDetector:
         # 5. Composite severity + GPR nowcast
         severity = _composite_severity(raw, llm_res, ais)
 
-        # gpr_z: prefer LLM estimate; fall back to CAMEO-based score
-        if llm_res.get("gpr_z_estimate") is not None:
+        # gpr_z: prefer LLM estimate ONLY when LLM was actually used.
+        # The rule-based path's gpr_z_estimate uses a 75th-percentile aggregation
+        # that washes out tail signals when most articles are non-ME — even when
+        # violent CAMEO codes (191/195/etc.) are detected. Always derive from
+        # max CAMEO severity in that case.
+        if llm_res.get("llm_used") and llm_res.get("gpr_z_estimate") is not None:
             gpr_z = float(llm_res["gpr_z_estimate"])
         else:
-            # Rule-based: derive z from max CAMEO severity in detected codes
+            # Rule-based (or LLM unavailable): derive z from max CAMEO severity
             detected_codes = llm_res.get("dominant_cameo_codes", [])
             if detected_codes:
                 max_sev = max(
