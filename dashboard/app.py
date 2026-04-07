@@ -559,7 +559,7 @@ def render_layer0_panel(opts: dict) -> None:
         sig = load_event_signal(
             lookback_hours=opts["lookback"],
             use_llm=opts["use_llm"],
-            _key=os.getenv("ANTHROPIC_API_KEY", ""),
+            _key=os.getenv("ANTHROPIC_API_KEY", "") or st.secrets.get("ANTHROPIC_API_KEY", ""),
         )
 
     if "error" in sig and not sig.get("_from_cache"):

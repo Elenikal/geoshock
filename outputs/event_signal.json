@@ -1,1 +1,36 @@
-{"timestamp": "2026-03-16T01:18:28.997142+00:00", "severity_score": 5.52, "gpr_nowcast": 1.97, "regime": "ELEVATED", "cameo_codes": ["191", "15"], "ais_anomaly": false, "ais_signal": {"tanker_z": -0.684, "brent_wti_spread": 0.71, "brent_wti_z": -3.377, "anomaly": false, "tickers_used": ["INSW", "TK", "TRMD", "FRO"]}, "article_count": 3, "location_hit_rate": 1.0, "top_headlines": ["[DEMO] Iran military exercise near Strait of Hormuz", "[DEMO] US carrier group repositioned to Persian Gulf", "[DEMO] Israel conducts airstrikes in Lebanon"], "llm_used": false, "llm_summary": "Rule-based CAMEO (LLM unavailable)."}
+{
+  "timestamp": "2026-04-06T23:50:03.668149+00:00",
+  "severity_score": 1.2,
+  "gpr_nowcast": 0.5,
+  "regime": "CALM",
+  "cameo_codes": [
+    "191",
+    "195"
+  ],
+  "ais_anomaly": true,
+  "ais_signal": {
+    "tanker_z": -0.038,
+    "brent_wti_spread": -3.42,
+    "brent_wti_z": -2.616,
+    "freight_z": 0.333,
+    "anomaly": true,
+    "tickers_used": [
+      "INSW",
+      "TK",
+      "TRMD",
+      "FRO",
+      "BWET"
+    ]
+  },
+  "article_count": 50,
+  "location_hit_rate": 0.28,
+  "top_headlines": [
+    "Ministro e rei : as 104 arbitrariedades de Alexandre de Moraes",
+    "\u0130srail ve ABD ordular\u0131n\u0131n \u0130randa sivil altyap\u0131ya y\u00f6nelik hava sald\u0131r\u0131lar\u0131 i\u00e7in ortak haz\u0131rl\u0131klar yapt\u0131\u011f\u0131 iddias\u0131",
+    "Hegseth : Hoy se registrar\u00e1 el mayor n\u00famero de ataques sobre Ir\u00e1n",
+    "  Like finding a needle in a haystack : Trump credits CIA for locating airman in Iran",
+    "Trump Reveals New Details Of F - 15E Crew Member Rescue"
+  ],
+  "llm_used": false,
+  "llm_summary": "Rule-based CAMEO (LLM unavailable)."
+}
