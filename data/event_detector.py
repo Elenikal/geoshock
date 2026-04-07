@@ -259,8 +259,8 @@ def fetch_gdelt_articles(lookback_hours: int = 48, max_records: int = 50) -> lis
         log.info(f"  -> {len(articles)} articles returned")
         return articles
     except Exception as e:
-        log.warning(f"  GDELT failed ({e}) - using synthetic fallback")
-        return _synthetic_articles()
+        log.warning(f"  GDELT failed ({e}) - raising so caller can fall back to last-known-good")
+        raise
 
 
 def _synthetic_articles() -> list[dict]:

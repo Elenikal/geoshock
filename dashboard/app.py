@@ -152,10 +152,17 @@ def load_event_signal(
                     result["gpr_nowcast"] = _prev["gpr_nowcast"]
             except Exception:
                 pass
-        # persist for the status bar reader
-        _out.parent.mkdir(exist_ok=True)
-        import json as _j
-        _out.write_text(_j.dumps(result, default=str))
+        # persist for the status bar reader — but only if the result is real.
+        # Refuse to overwrite the on-disk fallback with empty results or
+        # synthetic [DEMO] headlines (which would clobber the last-known-good
+        # snapshot baked into the container).
+        _hl = result.get("top_headlines") or []
+        _looks_demo = any(str(h).startswith("[DEMO]") for h in _hl)
+        _is_empty = (result.get("article_count", 0) == 0) or (not _hl)
+        if not _looks_demo and not _is_empty:
+            _out.parent.mkdir(exist_ok=True)
+            import json as _j
+            _out.write_text(_j.dumps(result, default=str))
         return result
     except Exception as e:
         # Try to load last saved signal before returning zeros
