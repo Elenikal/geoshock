@@ -144,28 +144,31 @@ GSCPI_URL = "https://www.newyorkfed.org/medialibrary/media/research/gscpi/downlo
 
 def fetch_gpr_index() -> pd.Series:
     """
-    Download the Geopolitical Risk (GPR) Index.
-    Primary source: FRED series GEPUCURRENT (Caldara & Iacoviello).
-    Fallback: direct download from Iacoviello's website (GPR column).
+    Download the Caldara-Iacoviello Geopolitical Risk (GPR) Index.
+    Primary source: matteoiacoviello.com xls (real GPR column).
+    Fallback: FRED GEPUCURRENT (NB: this is EPU, not GPR — last-resort only).
 
     Returns monthly pd.Series from 1985-01-01, name='gpr'.
     """
-    log.info("Fetching GPR index from FRED (GEPUCURRENT) …")
-    try:
-        return _fetch_gpr_fred()
-    except Exception as e:
-        log.warning(f"  FRED GPR failed ({e}). Trying website download …")
-
     log.info("Fetching GPR index from Iacoviello website …")
     try:
-        resp = requests.get(GPR_URL, timeout=30)
-        resp.raise_for_status()
+        # Prefer local cached xls if present (LOCAL TEST: data_gpr_export.xls in repo root)
+        _local = Path(__file__).parent.parent / "data_gpr_export.xls"
+        if _local.exists():
+            log.info(f"  using local xls: {_local}")
+            content = _local.read_bytes()
+        else:
+            resp = requests.get(GPR_URL, timeout=30)
+            resp.raise_for_status()
+            content = resp.content
+        resp = type("R", (), {"content": content})()  # shim for downstream code
 
         # The Excel file has a blank first row; actual headers are in row 1
-        df = pd.read_excel(io.BytesIO(resp.content), sheet_name=0, header=1)
+        df = pd.read_excel(io.BytesIO(resp.content), sheet_name=0, header=1, engine="xlrd")
         df.columns = [str(c).strip() for c in df.columns]
 
-        target_col = "GPR"
+        # LOCAL TEST: GPRT (threats subindex) + GIPI v2 — the combined save.
+        target_col = "GPRT"
         if target_col not in df.columns:
             raise KeyError(f"{target_col} not found in columns: {df.columns[:10].tolist()}")
 

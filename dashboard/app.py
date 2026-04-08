@@ -6,10 +6,11 @@ Run:  PYTHONPATH=. PYTHONWARNINGS=ignore streamlit run dashboard/app.py 2>/dev/n
 Sections
 ────────
   00  LIVE ALERT BAR    Layer 0 real-time event signal (GDELT + CAMEO + AIS)
-  01  GPR MONITOR       GPR time series, regime distribution, rolling metrics
+  01  GPRT MONITOR      GPRT time series, regime distribution, rolling metrics
   02  GIPI PANEL        Geopolitical Inflation Pressure Index + channel breakdown
   03  GROWTH-AT-RISK    Fan chart, predictive distribution, tail probability
-  04  LOCAL PROJECTIONS IRF by outcome and regime
+  04  LOC
+  AL PROJECTIONS IRF by outcome and regime
   05  VAR / FEVD        Forecast error variance decomposition, Granger table
   06  INFLATION CHANNELS Breakeven, import prices, energy, food, Arab Light spread
 ─────────────────────────────────────────────────────────────────────────────
@@ -60,7 +61,7 @@ warnings.simplefilter("ignore", UserWarning)
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="GeoShock — Geopolitical Risk Monitor",
+    page_title="GeoShock — Geopolitical Threats → US Inflation Channels",
     page_icon="🛰️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -261,13 +262,13 @@ def fig_gpr_series(df: pd.DataFrame, n: int = 120) -> go.Figure:
 
     fig.add_trace(go.Scatter(
         x=sub.index, y=sub["gpr_level"],
-        line=dict(color=AMBER, width=2), name="GPR",
-        hovertemplate="%{x|%b %Y}<br>GPR=%{y:.0f}<extra></extra>",
+        line=dict(color=AMBER, width=2), name="GPRT",
+        hovertemplate="%{x|%b %Y}<br>GPRT=%{y:.0f}<extra></extra>",
     ))
     if "gpr_z" in sub.columns:
         fig.add_trace(go.Scatter(
             x=sub.index, y=sub["gpr_z"] * sub["gpr_level"].mean() / sub["gpr_z"].std(),
-            line=dict(color=BLUE, width=1, dash="dot"), name="GPR z (scaled)",
+            line=dict(color=BLUE, width=1, dash="dot"), name="GPRT z (scaled)",
             opacity=0.5,
         ))
 
@@ -442,7 +443,7 @@ def fig_lp_irf(lp_data: dict, outcome: str) -> go.Figure:
     fig.add_hline(y=0, line=dict(color=MUTED, width=0.8, dash="dot"))
 
     fig.update_layout(**BASE_LAYOUT, height=240,
-                      title=dict(text=f"LP-IRF: GPR Shock → {outcome}",
+                      title=dict(text=f"LP-IRF: GPRT Shock → {outcome}",
                                  font=dict(size=10, color=MUTED), x=0.01))
     return fig
 
@@ -536,7 +537,7 @@ def render_sidebar() -> dict:
         st.divider()
         st.markdown(
             "<div style='font-size:8px;color:#334155;line-height:1.7'>"
-            "Data: FRED · Yahoo Finance · Iacoviello GPR · NY Fed GSCPI<br>"
+            "Data: FRED · Yahoo Finance · Iacoviello GPRT (threats) · NY Fed GSCPI<br>"
             "       EIA Arab Light · FAO Food Price Index<br>"
             "Layer 0: GDELT · Anthropic Claude · AIS Tanker Proxy<br>"
             "Models: LP (Jordà 2005) · GaR (Adrian+ 2019) · VAR<br>"
@@ -597,7 +598,7 @@ def render_layer0_panel(opts: dict) -> None:
                    letter-spacing:2px;margin-left:8px'>{regime}</span>
       <span style='color:#64748b;font-size:10px;margin-left:16px'>
         Severity {sev:.1f}/10 &nbsp;|&nbsp;
-        GPR nowcast z = {gpr_z:.2f} &nbsp;|&nbsp;
+        GPRT nowcast z = {gpr_z:.2f} &nbsp;|&nbsp;
         CAMEO: {', '.join(codes) if codes else 'none'} &nbsp;|&nbsp;
         {n_art} articles ({hr:.0%} ME) &nbsp;|&nbsp;
         {'LLM-coded' if llm else 'Rule-based CAMEO'}
@@ -610,7 +611,7 @@ def render_layer0_panel(opts: dict) -> None:
     c1.metric("Severity", f"{sev:.1f}/10",
               delta="⚠ HIGH" if sev >= 5 else None,
               delta_color="inverse" if sev >= 5 else "off")
-    c2.metric("GPR Nowcast (z)", f"{gpr_z:.2f}")
+    c2.metric("GPRT Nowcast (z)", f"{gpr_z:.2f}")
     c3.metric("CAMEO Codes", ", ".join(codes[:2]) if codes else "none")
     c4.metric("AIS Anomaly", "⚠ YES" if ais_an else "NO",
               delta="Hormuz signal" if ais_an else None,
@@ -719,13 +720,13 @@ def main():
     # ── Page header ───────────────────────────────────────────────────────────
     st.markdown("""
     <div style='padding:2px 0 14px'>
-      <div style='font-size:9px;letter-spacing:3px;color:#475569'>REAL-TIME TAIL RISK</div>
+      <div style='font-size:9px;letter-spacing:3px;color:#475569'>REAL-TIME MONITORING</div>
       <h1 style='font-size:20px;font-weight:700;color:#f1f5f9;margin:3px 0'>
-        GeoShock — Geopolitical Risk → US Macro Forecasting
+        GeoShock — Geopolitical Threats → US Inflation Channels (GIPI)
       </h1>
       <p style='font-size:10px;color:#475569;margin:0'>
-        Layer 0 Event Detection · Local Projections (Jordà 2005) ·
-        Growth-at-Risk + GIPI (Adrian+ 2019) · Cholesky VAR
+        Layer 0 Event Detection · GPRT (Caldara–Iacoviello threats) · GIPI Channels ·
+        Local Projections · Growth-at-Risk · Cholesky VAR
       </p>
     </div>""", unsafe_allow_html=True)
 
@@ -772,9 +773,9 @@ def main():
     rc     = REGIME_COLOR.get(regime, AMBER)
 
     c1,c2,c3,c4,c5,c6,c7 = st.columns(7)
-    c1.metric("GPR Index", f"{gpr_v:.0f}" if not np.isnan(gpr_v) else "N/A",
+    c1.metric("GPRT Index", f"{gpr_v:.0f}" if not np.isnan(gpr_v) else "N/A",
               f"{gpr_v - prev.get('gpr_level',gpr_v):+.0f} MoM" if not np.isnan(gpr_v) else None)
-    c2.metric("GPR Z-Score", f"{gpr_z:.2f}" if not np.isnan(gpr_z) else "N/A")
+    c2.metric("GPRT Z-Score", f"{gpr_z:.2f}" if not np.isnan(gpr_z) else "N/A")
     c3.metric("Regime", regime.upper(), delta_color="off")
     c4.metric("VIX",    f"{latest.get('vix',np.nan):.1f}" if 'vix' in latest.index else "N/A",
               f"{latest.get('vix_change',np.nan):+.1f}" if 'vix_change' in latest.index else None)
@@ -811,7 +812,7 @@ def main():
             f"&nbsp;&nbsp;⚡ <b>Nowcast ({_now_month}):</b> "
             f"<span style='color:{_nc_color}'>z={_nowcast_z:.2f} &nbsp;{_l0_regime}</span>"
             f"&nbsp; <span style='color:#64748b;font-size:9px'>"
-            f"[bridges {_lag_months}-month GPR lag · {_l0_articles} articles]</span>"
+            f"[bridges {_lag_months}-month GPRT lag · {_l0_articles} articles]</span>"
         )
     else:
         _nowcast_html = "&nbsp;&nbsp;<span style='color:#64748b'>⚡ Nowcast: run Layer 0 to update</span>"
@@ -819,8 +820,8 @@ def main():
     st.markdown(f"""
     <div style='background:#0c1122;border:1px solid #1e2d4a;border-left:4px solid {rc};
     border-radius:5px;padding:6px 14px;margin:6px 0;font-size:10px;color:{rc}'>
-      📅 <b>Official GPR: {last_dt.strftime('%B %Y')}</b> &nbsp;|&nbsp;
-      GPR={gpr_v:.0f} (z={gpr_z:.2f}) &nbsp;|&nbsp; Regime: <b>{regime.upper()}</b>
+      📅 <b>Official GPRT: {last_dt.strftime('%B %Y')}</b> &nbsp;|&nbsp;
+      GPRT={gpr_v:.0f} (z={gpr_z:.2f}) &nbsp;|&nbsp; Regime: <b>{regime.upper()}</b>
       {_nowcast_html}
     </div>""", unsafe_allow_html=True)
 
@@ -835,9 +836,9 @@ def main():
         s00.update(label="00 — Layer 0: Event Detection  ✓", state="complete", expanded=True)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Section 01: GPR Monitor
+    # Section 01: GPRT Monitor
     # ─────────────────────────────────────────────────────────────────────────
-    with st.status("01 — Loading GPR Monitor …", expanded=True) as s01:
+    with st.status("01 — Loading GPRT Monitor …", expanded=True) as s01:
         c_a, c_b = st.columns([3, 1])
         with c_a:
             st.plotly_chart(fig_gpr_series(df, n=opts["n_history"]), use_container_width=True, config={"displayModeBar": False})
@@ -867,10 +868,10 @@ def main():
                 fig_z.add_hline(y=2.5, line=dict(color=RED,   width=0.8, dash="dash"))
                 _lz = {**BASE_LAYOUT, "margin": dict(l=36, r=8, t=28, b=28)}
                 fig_z.update_layout(**_lz, height=180,
-                                    title=dict(text="GPR Z-Score",
+                                    title=dict(text="GPRT Z-Score",
                                                font=dict(size=9, color=MUTED), x=0.01))
                 st.plotly_chart(fig_z, use_container_width=True, config={"displayModeBar": False})
-        s01.update(label="01 — GPR Monitor  ✓", state="complete", expanded=True)
+        s01.update(label="01 — GPRT Monitor  ✓", state="complete", expanded=True)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Section 02: GIPI Panel
@@ -993,11 +994,11 @@ def main():
             if fevd_path.exists():
                 vc1, vc2 = st.columns([2, 1])
                 with vc1:
-                    st.image(str(fevd_path), caption="FEVD — GPR share of forecast error variance")
+                    st.image(str(fevd_path), caption="FEVD — GPRT share of forecast error variance")
                 with vc2:
                     if opts.get("show_granger") and granger_path.exists():
                         gc = pd.read_csv(granger_path)
-                        st.markdown("**Granger causality: GPR → X**")
+                        st.markdown("**Granger causality: GPRT → X**")
                         for _, row in gc.iterrows():
                             pval = row.get("p_value", row.get("pvalue", np.nan))
                             sig  = "***" if pval < 0.01 else "**" if pval < 0.05 else "*" if pval < 0.1 else ""

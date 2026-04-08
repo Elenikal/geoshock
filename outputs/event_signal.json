@@ -1,18 +1,20 @@
 {
-  "timestamp": "2026-04-06T23:50:03.668149+00:00",
+  "timestamp": "2026-04-08T01:58:43.123114+00:00",
   "severity_score": 1.2,
-  "gpr_nowcast": 0.5,
-  "regime": "CALM",
+  "gpr_nowcast": 3.65,
+  "regime": "CRISIS",
   "cameo_codes": [
+    "16",
+    "195",
     "191",
-    "195"
+    "204"
   ],
   "ais_anomaly": true,
   "ais_signal": {
-    "tanker_z": -0.038,
-    "brent_wti_spread": -3.42,
-    "brent_wti_z": -2.616,
-    "freight_z": 0.333,
+    "tanker_z": -1.271,
+    "brent_wti_spread": -2.13,
+    "brent_wti_z": -2.168,
+    "freight_z": -0.603,
     "anomaly": true,
     "tickers_used": [
       "INSW",
@@ -23,13 +25,13 @@
     ]
   },
   "article_count": 50,
-  "location_hit_rate": 0.28,
+  "location_hit_rate": 0.42,
   "top_headlines": [
-    "Ministro e rei : as 104 arbitrariedades de Alexandre de Moraes",
-    "\u0130srail ve ABD ordular\u0131n\u0131n \u0130randa sivil altyap\u0131ya y\u00f6nelik hava sald\u0131r\u0131lar\u0131 i\u00e7in ortak haz\u0131rl\u0131klar yapt\u0131\u011f\u0131 iddias\u0131",
-    "Hegseth : Hoy se registrar\u00e1 el mayor n\u00famero de ataques sobre Ir\u00e1n",
-    "  Like finding a needle in a haystack : Trump credits CIA for locating airman in Iran",
-    "Trump Reveals New Details Of F - 15E Crew Member Rescue"
+    "ljyn hinta l\u00e4hti kovaan sukellukseen Trumpin ilmoitettua lykkv\u00e4ns\u00e4 Iran - iskuja",
+    "Trump delays Iran infrastructure bombing by 2 weeks after threatening  whole civilization  ",
+    "Trump recua e aceita suspender ataques ao Ir\u00e3 por duas semanas",
+    "What did Donald Trump two - week Iran ceasefire announcement say ? Full text",
+    "Pre\u00e7os de passagens a\u00e9reas disparam com guerra no Ir\u00e3"
   ],
   "llm_used": false,
   "llm_summary": "Rule-based CAMEO (LLM unavailable)."
