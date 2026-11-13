@@ -116,7 +116,11 @@ class LocalProjections:
     bootstrap_reps : int
         Number of bootstrap replications for CIs. Set 0 to skip.
     regime_col : str | None
-        Column defining regimes. If provided, can filter to a regime.
+        Column of GPR regime codes (0 calm, 1 elevated, 2 crisis).
+    state : pd.Series | None
+        Boolean state indicator (e.g. GIPI_{t-1} above median). The LP is
+        estimated on months where it is True, with leads/lags taken on the
+        full calendar index (Ramey–Zubairy 2018 sample-split form).
     """
 
     def __init__(
@@ -127,8 +131,9 @@ class LocalProjections:
         controls: list[str] | None = None,
         n_lags: int = 4,
         horizon: int = 24,
-        bootstrap_reps: int = 500,
+        bootstrap_reps: int = 0,
         regime_col: str | None = "regime",
+        state: pd.Series | None = None,
     ):
         self.df = df.copy()
         self.shock = shock
@@ -138,6 +143,7 @@ class LocalProjections:
         self.horizon = horizon
         self.bootstrap_reps = bootstrap_reps
         self.regime_col = regime_col
+        self.state = state          # boolean Series: estimate on months where True
         self.results_: dict[str, LPResult] = {}
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -178,10 +184,9 @@ class LocalProjections:
         ci_68 = np.column_stack([betas - 1.00 * se_hac, betas + 1.00 * se_hac])
         ci_90 = np.column_stack([betas - 1.645 * se_hac, betas + 1.645 * se_hac])
 
-        # Bootstrap
+        # Bands are ±HAC SEs. (The former i.i.d. row bootstrap destroyed the
+        # time ordering and has been removed; bootstrap_reps is ignored.)
         bs_draws = None
-        if self.bootstrap_reps > 0:
-            bs_draws = self._bootstrap(df, H)
 
         res = LPResult(
             shock=self.shock,
@@ -211,15 +216,20 @@ class LocalProjections:
         return self.results_
 
     # ─────────────────────────────────────────────────────────────────────────
+    _REGIME_CODES = {"calm": 0.0, "elevated": 1.0, "crisis": 2.0}
+
     def _prepare_data(self, regime: str) -> pd.DataFrame:
-        cols_needed = [self.shock, self.outcome] + self.controls
-        available   = [c for c in cols_needed if c in self.df.columns]
-        df = self.df[available].dropna()
-
+        # Keep the full contiguous monthly index: leads/lags are calendar
+        # shifts. Regime/state masks are applied after the regression frame
+        # is built (see _estimate_horizon).
+        cols = [c for c in [self.shock, self.outcome] + self.controls if c in self.df.columns]
+        df = self.df[cols].asfreq("MS")
+        mask = pd.Series(True, index=df.index)
+        if self.state is not None:
+            mask &= self.state.reindex(df.index).fillna(False).astype(bool)
         if regime != "full" and self.regime_col and self.regime_col in self.df.columns:
-            mask = self.df[self.regime_col] == regime
-            df = df[mask.reindex(df.index, fill_value=False)]
-
+            mask &= self.df[self.regime_col].reindex(df.index) == self._REGIME_CODES[regime]
+        self._mask = mask
         return df
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -227,73 +237,74 @@ class LocalProjections:
         self, df: pd.DataFrame, h: int
     ) -> tuple[float, float, float, int]:
         """
-        LP regression at horizon h:
-          (y_{t+h} - y_{t-1}) = α + β*shock_t + Γ*X_t + lags + ε
+        LP regression at horizon h on the (possibly state-restricted) sample:
+          (y_{t+h} - y_{t-1}) = α + β·shock_t + Γ·X_{t-1}
+                                + Σ_k (φ_k y_{t-k} + ψ_k shock_{t-k}) + ε
+        Controls enter at t-1 so they are predetermined w.r.t. the shock.
+        Newey–West SEs with bandwidth h+1.
         """
-        y = df[self.outcome].shift(-h)   # outcome h periods ahead
-        y_lag1 = df[self.outcome].shift(1)
+        data = self._design(df, h)
+        data = data[self._mask.reindex(data.index).fillna(False)]
+        if len(data) < 30:
+            return np.nan, np.nan, np.nan, len(data)
 
-        # Cumulative outcome change (as in Jordà 2005)
-        lhs = y - y_lag1
+        Y = data.iloc[:, 0].values
+        X = sm.add_constant(data.iloc[:, 1:].values.astype(float))
+        res = sm.OLS(Y, X).fit()
+        se = np.sqrt(np.diag(cov_hac(res, nlags=h + 1)))
+        return float(res.params[1]), float(se[1]), float(res.rsquared), len(data)
 
-        # RHS: shock + controls + lags
+    # ─────────────────────────────────────────────────────────────────────────
+    def _design(self, df: pd.DataFrame, h: int) -> pd.DataFrame:
+        """Regression frame at horizon h: column 0 = y_{t+h} - y_{t-1},
+        column 1 = shock_t, then lagged controls and lags of shock/outcome."""
+        lhs = (df[self.outcome].shift(-h) - df[self.outcome].shift(1)).rename("lhs")
         rhs_parts = [df[self.shock]]
-
-        # Contemporaneous controls (available controls)
         for c in self.controls:
-            if c in df.columns and c != self.outcome and c != self.shock:
-                rhs_parts.append(df[c])
-
-        # Lags of shock and outcome
+            if c in df.columns and c not in (self.outcome, self.shock):
+                rhs_parts.append(df[c].shift(1).rename(f"{c}_L1"))
         for lag in range(1, self.n_lags + 1):
             rhs_parts.append(df[self.shock].shift(lag).rename(f"{self.shock}_L{lag}"))
             rhs_parts.append(df[self.outcome].shift(lag).rename(f"{self.outcome}_L{lag}"))
 
-        X_raw = pd.concat(rhs_parts, axis=1)
-        data  = pd.concat([lhs, X_raw], axis=1).dropna()
-
-        if len(data) < 30:
-            return 0.0, 0.0, 0.0, 0
-
-        Y  = data.iloc[:, 0].values
-        X  = sm.add_constant(data.iloc[:, 1:].values.astype(float))
-        n  = len(Y)
-
-        try:
-            res  = sm.OLS(Y, X).fit()
-            # HAC covariance (Newey-West), bandwidth = floor(4*(n/100)^(2/9))
-            nw_bw = int(np.floor(4 * (n / 100) ** (2 / 9)))
-            hac   = cov_hac(res, nlags=nw_bw)
-            se    = np.sqrt(np.diag(hac))
-            beta_idx = 1   # first coef after constant is the shock
-            return float(res.params[beta_idx]), float(se[beta_idx]), float(res.rsquared), n
-        except Exception as e:
-            log.debug(f"  OLS failed at h={h}: {e}")
-            return 0.0, 0.0, 0.0, n
+        return pd.concat([lhs] + rhs_parts, axis=1).dropna()
 
     # ─────────────────────────────────────────────────────────────────────────
-    def _bootstrap(self, df: pd.DataFrame, H: int) -> np.ndarray:
+    def fit_state_dependent(self, state: pd.Series, horizon: int | None = None) -> dict:
         """
-        Residual bootstrap: re-sample OLS residuals, re-estimate betas at each h.
-        Returns array of shape (B, H+1).
+        Fully interacted state-dependent LP (Ramey & Zubairy 2018):
+          y_{t+h} - y_{t-1} = D_t·(α^H + β^H_h shock_t + Γ^H Z_t)
+                            + (1-D_t)·(α^L + β^L_h shock_t + Γ^L Z_t) + ε
+        D_t is the boolean `state` (pass it already lagged, e.g. GIPI_{t-1}
+        above its median). Point estimates equal the split-sample LPs; the
+        joint regression gives a HAC (bandwidth h+1) test of β^H - β^L.
         """
-        B    = self.bootstrap_reps
-        bs   = np.zeros((B, H + 1))
-        rng  = np.random.default_rng(42)
-
-        for b in range(B):
-            # Re-sample row indices with replacement
-            idx = rng.choice(len(df), size=len(df), replace=True)
-            df_b = df.iloc[idx].copy()
-            df_b.index = df.index[:len(df_b)]   # reset index for shifting
-
-            betas_b = []
-            for h in range(H + 1):
-                beta, _, _, _ = self._estimate_horizon(df_b, h)
-                betas_b.append(beta)
-            bs[b] = np.array(betas_b)
-
-        return bs
+        H = self.horizon if horizon is None else horizon
+        self._mask = pd.Series(True, index=self.df.index)
+        df = self._prepare_data("full")
+        out = {k: np.full(H + 1, np.nan) for k in
+               ["b_hi", "se_hi", "b_lo", "se_lo", "diff", "se_diff", "p_diff", "n_hi", "n_lo"]}
+        for h in range(H + 1):
+            data = self._design(df, h)
+            D = state.reindex(data.index).astype(float)
+            ok = D.notna()
+            data, D = data[ok], D[ok].values[:, None]
+            Y = data.iloc[:, 0].values
+            Z = np.column_stack([np.ones(len(data)), data.iloc[:, 1:].values.astype(float)])
+            X = np.hstack([D * Z, (1 - D) * Z])
+            k = Z.shape[1]
+            res = sm.OLS(Y, X).fit()
+            V = cov_hac(res, nlags=h + 1)
+            iH, iL = 1, k + 1                       # shock coefficient in each block
+            out["b_hi"][h], out["b_lo"][h] = res.params[iH], res.params[iL]
+            out["se_hi"][h], out["se_lo"][h] = np.sqrt(V[iH, iH]), np.sqrt(V[iL, iL])
+            d = res.params[iH] - res.params[iL]
+            sd = np.sqrt(V[iH, iH] + V[iL, iL] - 2 * V[iH, iL])
+            out["diff"][h], out["se_diff"][h] = d, sd
+            out["p_diff"][h] = 2 * (1 - __import__("scipy").stats.norm.cdf(abs(d / sd)))
+            out["n_hi"][h], out["n_lo"][h] = D.sum(), (1 - D).sum()
+        out["horizons"] = np.arange(H + 1)
+        return out
 
     # ─────────────────────────────────────────────────────────────────────────
     def plot_irf(

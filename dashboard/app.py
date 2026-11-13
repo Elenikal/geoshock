@@ -119,7 +119,9 @@ Q_COLORS = {0.05: RED, 0.10: ORANGE, 0.25: AMBER,
 
 @st.cache_data(ttl=3600, show_spinner="Loading macro data …")
 def load_data(refresh: bool = False) -> pd.DataFrame:
+    import data.pipeline as _pl
     from data.pipeline import DataPipeline, cfg as pipeline_cfg
+    _pl.cfg.END_DATE = None                      # live: data up to today
     logging.info(f"[DEBUG] FRED_KEY present: {bool(pipeline_cfg.FRED_KEY)}, "
                  f"FRED_KEY length: {len(pipeline_cfg.FRED_KEY)}, "
                  f"FRED_SERIES count: {len(getattr(pipeline_cfg, 'FRED_CORE', getattr(pipeline_cfg, 'FRED_SERIES', {})))}")
@@ -143,16 +145,6 @@ def load_event_signal(
         sig = ed.detect(lookback_hours=lookback_hours,
                         use_llm=use_llm, use_ais=True)
         result = sig.to_dict()
-        # If nowcast came back as 0, try to preserve last known good value
-        _out = Path(__file__).parent.parent / "outputs" / "event_signal.json"
-        if result.get("gpr_nowcast", 0.0) == 0.0 and _out.exists():
-            try:
-                import json as _j
-                _prev = _j.loads(_out.read_text())
-                if _prev.get("gpr_nowcast", 0.0) != 0.0:
-                    result["gpr_nowcast"] = _prev["gpr_nowcast"]
-            except Exception:
-                pass
         # persist for the status bar reader — but only if the result is real.
         # Refuse to overwrite the on-disk fallback with empty results or
         # synthetic [DEMO] headlines (which would clobber the last-known-good
@@ -203,7 +195,14 @@ def compute_gar(df_json: str, outcome: str, horizon: int,
         return s.values.tolist()
 
     idx = r.fitted.get(0.50, pd.Series(dtype=float)).index
+    from scipy.stats import norm as _norm
+    nc = r.nowcast
+    _sig = max((nc[0.90] - nc[0.10]) / (_norm.ppf(0.90) - _norm.ppf(0.10)), 0.1)
     return {
+        "outcome":    outcome,
+        "origin":     str(r.origin.date()) if r.origin is not None else "",
+        "p_gt3":      float(1 - _norm.cdf(3, nc[0.50], _sig)),
+        "p_gt4":      float(1 - _norm.cdf(4, nc[0.50], _sig)),
         "gar_5":      r.gar_5,
         "gar_25":     r.gar_25,
         "median":     r.median_forecast,
@@ -236,6 +235,23 @@ def compute_lp(df_json: str, outcome: str, shock: str,
         "ci90_hi":  r.ci_90[:, 1].tolist(),
         "horizons": r.horizons.tolist(),
     }
+
+
+@st.cache_data(ttl=7200, show_spinner="Estimating state-dependent local projections …")
+def compute_lp_state(df_json: str, outcome: str, horizon: int) -> dict:
+    """Fully interacted LP: GPRT shock × 1[GIPI_{t-1} ≥ median] (paper §V)."""
+    df = pd.read_json(df_json)
+    df.index = pd.to_datetime(df.index)
+    from models.local_projections import LocalProjections
+    st_ = df["gipi"].shift(1)
+    D = (st_ >= st_.median()).where(st_.notna())
+    o = LocalProjections(df, shock="gpr_shock", outcome=outcome,
+                         horizon=horizon).fit_state_dependent(D)
+    g = df["gipi"].dropna()
+    return {k: np.asarray(v).tolist() for k, v in o.items()} | {
+        "median": float(st_.median()), "gipi_last": float(g.iloc[-1]),
+        "gipi_month": g.index[-1].strftime("%b %Y"),
+        "open": bool(g.iloc[-1] >= st_.median())}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -313,11 +329,9 @@ def fig_gipi(df: pd.DataFrame, n: int = 120) -> go.Figure:
         hovertemplate="%{x|%b %Y}<br>GIPI=%{y:.2f}<extra></extra>",
     ))
     # Zero line + thresholds
-    fig.add_hline(y=0,   line=dict(color=MUTED, width=0.8, dash="dot"))
-    fig.add_hline(y=1.5, line=dict(color=AMBER,  width=0.8, dash="dash"),
-                  annotation_text="elevated", annotation_font_size=8)
-    fig.add_hline(y=2.5, line=dict(color=RED,    width=0.8, dash="dash"),
-                  annotation_text="crisis", annotation_font_size=8)
+    _med = float(df["gipi"].shift(1).median())
+    fig.add_hline(y=_med, line=dict(color=MUTED, width=1, dash="dash"),
+                  annotation_text="median: above = channels open", annotation_font_size=8)
 
     fig.update_layout(**BASE_LAYOUT, height=260,
                       title=dict(
@@ -329,6 +343,7 @@ def fig_gipi(df: pd.DataFrame, n: int = 120) -> go.Figure:
 
 
 def fig_gar_fan(gar_data: dict, horizon: int) -> go.Figure:
+    is_cpi = gar_data.get("outcome") == "cpi_inflation"
     dates = pd.to_datetime(gar_data["dates"])
     fig   = go.Figure()
 
@@ -359,18 +374,22 @@ def fig_gar_fan(gar_data: dict, horizon: int) -> go.Figure:
     if q05:
         fig.add_trace(go.Scatter(
             x=dates, y=q05, line=dict(color=RED, width=1.5, dash="dash"),
-            name="GaR₅", hovertemplate="%{x|%b %Y}: %{y:.1f}%<extra></extra>",
+            name="5th pctile", hovertemplate="%{x|%b %Y}: %{y:.1f}%<extra></extra>",
         ))
 
-    fig.add_hline(y=0, line=dict(color=MUTED, width=0.8, dash="dot"))
-    fig.add_hline(y=-2, line=dict(color=RED, width=0.6, dash="dot"),
-                  annotation_text="recession", annotation_font_size=8)
+    if is_cpi:
+        fig.add_hline(y=3, line=dict(color=RED, width=0.6, dash="dot"),
+                      annotation_text="3%", annotation_font_size=8)
+    else:
+        fig.add_hline(y=0, line=dict(color=MUTED, width=0.8, dash="dot"))
+        fig.add_hline(y=-2, line=dict(color=RED, width=0.6, dash="dot"),
+                      annotation_text="−2%", annotation_font_size=8)
 
     fig.update_layout(**BASE_LAYOUT, height=300,
                       title=dict(
-                          text=f"Growth-at-Risk Fan Chart  (h = {horizon} months)",
+                          text=f"{'Inflation' if is_cpi else 'Growth'}-at-Risk: fitted quantiles of y(t+{horizon}), in sample",
                           font=dict(size=11, color=MUTED), x=0.01),
-                      yaxis_title="IP YoY Growth (%)",
+                      yaxis_title="CPI inflation YoY (%)" if is_cpi else "IP YoY growth (%)",
                       legend=dict(orientation="h", y=1.12,
                                   font=dict(size=9), bgcolor="rgba(0,0,0,0)"))
     return fig
@@ -392,9 +411,11 @@ def fig_gar_dist(gar_data: dict) -> go.Figure:
         return go.Figure()
 
     fig = go.Figure()
-    # Recession zone
-    fig.add_vrect(x0=lo, x1=-2, fillcolor=RED, opacity=0.07,
-                  layer="below", line_width=0)
+    is_cpi = gar_data.get("outcome") == "cpi_inflation"
+    if is_cpi:
+        fig.add_vrect(x0=3, x1=hi, fillcolor=RED, opacity=0.07, layer="below", line_width=0)
+    else:
+        fig.add_vrect(x0=lo, x1=-2, fillcolor=RED, opacity=0.07, layer="below", line_width=0)
     # KDE
     fig.add_trace(go.Scatter(
         x=x, y=kde_val, fill="tozeroy",
@@ -410,7 +431,8 @@ def fig_gar_dist(gar_data: dict) -> go.Figure:
     fig.update_layout(**BASE_LAYOUT, height=250,
                       title=dict(text="Predictive Distribution (nowcast)",
                                  font=dict(size=11, color=MUTED), x=0.01),
-                      xaxis_title="IP YoY Growth (%)", yaxis_title="Density",
+                      xaxis_title="CPI inflation YoY (%)" if is_cpi else "IP YoY growth (%)",
+                      yaxis_title="Density",
                       showlegend=False)
     return fig
 
@@ -445,6 +467,28 @@ def fig_lp_irf(lp_data: dict, outcome: str) -> go.Figure:
     fig.update_layout(**BASE_LAYOUT, height=240,
                       title=dict(text=f"LP-IRF: GPRT Shock → {outcome}",
                                  font=dict(size=10, color=MUTED), x=0.01))
+    return fig
+
+
+def fig_lp_state(d: dict, outcome: str) -> go.Figure:
+    h = d["horizons"]
+    fig = go.Figure()
+    for k, name, col, rgba in [("hi", "Channels open", RED, "239,68,68"),
+                               ("lo", "Channels closed", BLUE, "59,130,246")]:
+        b, se = np.array(d[f"b_{k}"]), np.array(d[f"se_{k}"])
+        cur = (k == "hi") == d["open"]
+        fig.add_trace(go.Scatter(x=h + h[::-1], y=list(b + 1.645 * se) + list((b - 1.645 * se)[::-1]),
+                                 fill="toself", fillcolor=f"rgba({rgba},{0.18 if cur else 0.07})",
+                                 line=dict(width=0), showlegend=False, hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=h, y=b.tolist(), name=name + (" (current)" if cur else ""),
+                                 line=dict(color=col, width=3 if cur else 1.5, dash="solid" if cur else "dot"),
+                                 hovertemplate="h=%{x}: %{y:.3f}<extra></extra>"))
+    fig.add_hline(y=0, line=dict(color=MUTED, width=0.8, dash="dot"))
+    fig.update_layout(**BASE_LAYOUT, height=280,
+                      title=dict(text=f"Response of {outcome} to a 1-s.d. GPRT shock, by channel state (90% bands)",
+                                 font=dict(size=10, color=MUTED), x=0.01),
+                      xaxis_title="months after shock", yaxis_title="pp",
+                      legend=dict(orientation="h", y=1.15, font=dict(size=9), bgcolor="rgba(0,0,0,0)"))
     return fig
 
 
@@ -518,14 +562,15 @@ def render_sidebar() -> dict:
 
         # ── Models ───────────────────────────────────────────────────────────
         st.markdown("<div class='section-hdr'>MODELS</div>", unsafe_allow_html=True)
-        outcome     = st.selectbox("Outcome variable",
-                                   ["ip_yoy", "cpi_inflation", "gdp_growth",
-                                    "unemp", "sp500_return", "ip_growth"],
-                                   index=0)
-        gar_horizon = st.select_slider("GaR horizon (months)", [3, 6, 12], value=6)
+        outcome     = st.selectbox("Tail-risk outcome", ["cpi_inflation", "ip_yoy"], index=0,
+                                   format_func=lambda c: {"cpi_inflation": "CPI inflation (Inflation-at-Risk)",
+                                                          "ip_yoy": "IP growth (Growth-at-Risk)"}[c])
+        gar_horizon = st.select_slider("Tail-risk horizon (months)", [3, 6, 12], value=6)
+        lp_outcome  = st.selectbox("State-dependent LP outcome",
+                                   ["cpi_inflation", "core_inflation", "ip_yoy"], index=0)
         lp_horizon  = st.select_slider("LP horizon (months)",  [12, 18, 24], value=18)
-        n_bootstrap = st.select_slider("Bootstrap reps", [100, 250, 500], value=250)
-        use_gipi    = st.checkbox("Include GIPI in GaR", value=True)
+        n_bootstrap = 0
+        use_gipi    = st.checkbox("Include GIPI (channel state)", value=True)
 
         # ── Display ──────────────────────────────────────────────────────────
         st.markdown("<div class='section-hdr'>DISPLAY</div>", unsafe_allow_html=True)
@@ -540,14 +585,14 @@ def render_sidebar() -> dict:
             "Data: FRED · Yahoo Finance · Iacoviello GPRT (threats) · NY Fed GSCPI<br>"
             "       EIA Arab Light · FAO Food Price Index<br>"
             "Layer 0: GDELT · Anthropic Claude · AIS Tanker Proxy<br>"
-            "Models: LP (Jordà 2005) · GaR (Adrian+ 2019) · VAR<br>"
+            "Models: state-dependent LP (Ramey–Zubairy 2018) · Inflation-at-Risk · GaR<br>"
             f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
             "</div>", unsafe_allow_html=True)
 
     return dict(
         refresh=refresh, run_l0=run_l0, lookback=lookback, use_llm=use_llm,
         show_raw_hl=show_raw_hl, n_history=n_history,
-        outcome=outcome, gar_horizon=gar_horizon, lp_horizon=lp_horizon,
+        outcome=outcome, gar_horizon=gar_horizon, lp_horizon=lp_horizon, lp_outcome=lp_outcome,
         n_bootstrap=n_bootstrap, use_gipi=use_gipi,
         show_gipi=show_gipi, show_inf=show_inf,
         show_var=show_var, show_granger=show_granger,
@@ -573,6 +618,9 @@ def render_layer0_panel(opts: dict) -> None:
     if "error" in sig and not sig.get("_from_cache"):
         st.warning(f"⚠ Layer 0 live run failed: `{sig['error']}`")
         return
+    if sig.get("_from_cache"):
+        st.caption(f"⚠ Live GDELT query failed; showing the last saved signal "
+                   f"({str(sig.get('timestamp', ''))[:16].replace('T', ' ')} UTC).")
 
     regime = sig.get("regime", "UNKNOWN")
     sev    = sig.get("severity_score", 0.0)
@@ -722,11 +770,13 @@ def main():
     <div style='padding:2px 0 14px'>
       <div style='font-size:9px;letter-spacing:3px;color:#475569'>REAL-TIME MONITORING</div>
       <h1 style='font-size:20px;font-weight:700;color:#f1f5f9;margin:3px 0'>
-        GeoShock — Geopolitical Threats → US Inflation Channels (GIPI)
+        GeoShock — Do geopolitical threats reach US inflation?
       </h1>
       <p style='font-size:10px;color:#475569;margin:0'>
-        Layer 0 Event Detection · GPRT (Caldara–Iacoviello threats) · GIPI Channels ·
-        Local Projections · Growth-at-Risk · Cholesky VAR
+        Threats raise headline inflation only when the cost-push channels (GIPI) are open ·
+        Kalamara, <i>Fire Without Smoke</i> (2026) ·
+        <a href='https://elenikal.github.io/geoshock/' style='color:#64748b'>daily summary page</a> ·
+        <a href='https://github.com/Elenikal/geoshock' style='color:#64748b'>code</a>
       </p>
     </div>""", unsafe_allow_html=True)
 
@@ -747,12 +797,8 @@ def main():
             import traceback
             st.error(f"Data load error: {e}")
             st.code(traceback.format_exc(), language="text")
-            from data.pipeline import _synthetic_gpr, _synthetic_fred, engineer_features
-            gpr = _synthetic_gpr().to_frame("gpr")
-            fred = _synthetic_fred({})
-            raw  = gpr.join(fred, how="outer")
-            df   = engineer_features(raw)
-            data_status.update(label="Macro data loaded (synthetic fallback)", state="complete")
+            data_status.update(label="Macro data unavailable", state="error")
+            return
 
     if df is None or df.empty:
         st.error("No data available.")
@@ -781,7 +827,10 @@ def main():
               f"{latest.get('vix_change',np.nan):+.1f}" if 'vix_change' in latest.index else None)
     c5.metric("WTI",    f"${latest.get('oil_price',np.nan):.0f}" if 'oil_price' in latest.index else "N/A",
               f"{latest.get('oil_return',np.nan):+.1f}% MoM" if 'oil_return' in latest.index else None)
-    c6.metric("HY Spread", f"{latest.get('hy_spread',np.nan) * 100:.0f}bps" if 'hy_spread' in latest.index else "N/A")
+    _cs_lab = "Baa–10Y spread" if "credit_spread_source" in df.columns else "HY Spread"
+    c6.metric(_cs_lab, f"{latest.get('hy_spread',np.nan) * 100:.0f}bps" if 'hy_spread' in latest.index else "N/A",
+              help="FRED now publishes only 3 years of ICE BofA HY OAS; Moody's Baa–10Y is used when history is short."
+              if "credit_spread_source" in df.columns else None)
 
     gipi_v = latest.get("gipi", np.nan)
     c7.metric("GIPI", f"{gipi_v:.2f}" if not np.isnan(gipi_v) else "N/A",
@@ -882,23 +931,28 @@ def main():
             with g1:
                 st.plotly_chart(fig_gipi(df, n=opts["n_history"]), use_container_width=True, config={"displayModeBar": False})
             with g2:
-                gipi_last = df["gipi"].dropna().iloc[-1] if df["gipi"].notna().any() else np.nan
-                gipi_3m   = df["gipi"].dropna().iloc[-4:-1].mean() if df["gipi"].notna().sum() > 3 else np.nan
-                gipi_rg   = ("CRISIS" if gipi_last >= 2.5
-                             else "ELEVATED" if gipi_last >= 1.5 else "CALM")
-                gcol          = REGIME_COLOR.get(gipi_rg, MUTED)
+                _gipi_series = df["gipi"].dropna()
+                gipi_last = _gipi_series.iloc[-1] if _gipi_series.size else np.nan
+                gipi_last_dt = _gipi_series.index[-1] if _gipi_series.size else None
+                gipi_3m   = _gipi_series.iloc[-4:-1].mean() if _gipi_series.size > 3 else np.nan
+                _gmed     = float(df["gipi"].shift(1).median())
+                gipi_rg   = "OPEN" if gipi_last >= _gmed else "CLOSED"
+                gcol      = RED if gipi_rg == "OPEN" else BLUE
                 gipi_last_str = f"{gipi_last:.2f}" if not np.isnan(gipi_last) else "N/A"
                 gipi_3m_str   = f"{gipi_3m:.2f}"   if not np.isnan(gipi_3m)   else "N/A"
+                gipi_date_str = gipi_last_dt.strftime("%b %Y") if gipi_last_dt is not None else "—"
                 st.markdown(f"""
                 <div style='background:#0c1122;border:1px solid #1e2d4a;
                             border-left:4px solid {gcol};border-radius:6px;
                             padding:14px;margin-top:8px'>
-                  <div style='color:{MUTED};font-size:9px'>GIPI NOW</div>
+                  <div style='color:{MUTED};font-size:9px'>LATEST GIPI ({gipi_date_str})</div>
                   <div style='color:{gcol};font-size:26px;font-weight:700'>
                     {gipi_last_str}</div>
                   <div style='color:{MUTED};font-size:10px;margin-top:4px'>
                     3-month avg: {gipi_3m_str}<br>
-                    Regime: <b style='color:{gcol}'>{gipi_rg}</b>
+                    Channels: <b style='color:{gcol}'>{gipi_rg}</b> (median {_gmed:.2f})<br>
+                    <span style='font-size:9px;color:#475569'>
+                    Bound by IMF energy/food publication lag (~3 mo).</span>
                   </div>
                 </div>
                 <div style='background:#0c1122;border:1px solid #1e2d4a;
@@ -910,7 +964,8 @@ def main():
                   · Global Energy Price YoY<br>
                   · Global Food Price YoY<br>
                   · ΔBreakeven 5Y<br><br>
-                  Higher GIPI = more geopolitical<br>inflation transmission pressure.
+                  Above median = channels open:<br>threat shocks raise headline CPI.<br>
+                  Below = closed: no pass-through.
                 </div>
                 """, unsafe_allow_html=True)
             s02.update(label="02 — GIPI Panel  ✓", state="complete", expanded=True)
@@ -932,7 +987,9 @@ def main():
     # ─────────────────────────────────────────────────────────────────────────
     # Section 03: Growth-at-Risk
     # ─────────────────────────────────────────────────────────────────────────
-    with st.status("03 — Estimating Growth-at-Risk …", expanded=True) as s03:
+    _is_cpi = safe_outcome == "cpi_inflation"
+    _tr_name = "Inflation-at-Risk" if _is_cpi else "Growth-at-Risk"
+    with st.status(f"03 — Estimating {_tr_name} …", expanded=True) as s03:
         try:
             gar_data = compute_gar(df_json, safe_outcome,
                                    opts["gar_horizon"], opts["use_gipi"])
@@ -943,45 +1000,59 @@ def main():
             with r2:
                 st.plotly_chart(fig_gar_dist(gar_data), use_container_width=True, config={"displayModeBar": False})
                 gk1, gk2 = st.columns(2)
-                gk1.metric("GaR₅",    f"{gar_data['gar_5']:+.1f}%")
-                gk2.metric("Median",   f"{gar_data['median']:+.1f}%")
-                gk1.metric("P(neg)",   f"{gar_data['prob_neg']:.1%}")
-                gk2.metric("P(rec<-2%)",f"{gar_data['prob_rec']:.1%}")
-                st.metric("Cond. Skewness", f"{gar_data['skewness']:+.2f}",
-                          help="+ve = upside risk dominates; -ve = downside tail heavy")
-            s03.update(label="03 — Growth-at-Risk  ✓", state="complete", expanded=True)
+                nc = gar_data["nowcast"]
+                if _is_cpi:
+                    gk1.metric("Median", f"{gar_data['median']:.2f}%")
+                    gk2.metric("95th pctile", f"{nc.get('0.95', np.nan):.2f}%")
+                    gk1.metric("P(π > 3%)", f"{gar_data['p_gt3']:.0%}")
+                    gk2.metric("P(π > 4%)", f"{gar_data['p_gt4']:.0%}")
+                else:
+                    gk1.metric("GaR₅",    f"{gar_data['gar_5']:+.1f}%")
+                    gk2.metric("Median",   f"{gar_data['median']:+.1f}%")
+                    gk1.metric("P(neg)",   f"{gar_data['prob_neg']:.1%}")
+                    gk2.metric("P(< −2%)", f"{gar_data['prob_rec']:.1%}")
+                st.metric("Bowley skewness", f"{gar_data['skewness']:+.2f}",
+                          help="(Q75+Q25−2·Q50)/(Q75−Q25); > 0 = longer upper tail")
+                st.caption(f"Nowcast from data dated {gar_data.get('origin','')}. "
+                           "Tail probabilities: Gaussian matched to median and 10–90 range.")
+            s03.update(label=f"03 — {_tr_name}  ✓", state="complete", expanded=True)
         except Exception as e:
             logging.error(f"GaR: {e}")
-            s03.update(label="03 — Growth-at-Risk  ✗", state="error", expanded=False)
+            s03.update(label=f"03 — {_tr_name}  ✗", state="error", expanded=False)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Section 04: Local Projections
     # ─────────────────────────────────────────────────────────────────────────
-    with st.status("04 — Estimating Local Projections …", expanded=True) as s04:
+    with st.status("04 — State-dependent local projections …", expanded=True) as s04:
         try:
-            lp_data = compute_lp(df_json, safe_outcome, "gpr_shock",
-                                 opts["lp_horizon"], opts["n_bootstrap"])
+            lpo = opts.get("lp_outcome", "cpi_inflation")
+            lp_data = compute_lp_state(df_json, lpo, opts["lp_horizon"])
             lc1, lc2 = st.columns([2, 1])
             with lc1:
-                st.plotly_chart(fig_lp_irf(lp_data, opts["outcome"]), use_container_width=True, config={"displayModeBar": False})
+                st.plotly_chart(fig_lp_state(lp_data, lpo), use_container_width=True,
+                                config={"displayModeBar": False})
             with lc2:
-                peak_h = int(np.argmax(np.abs(lp_data["betas"])))
-                peak_b = lp_data["betas"][peak_h]
+                h12 = min(12, len(lp_data["diff"]) - 1)
+                cur = "open" if lp_data["open"] else "closed"
+                b_cur = lp_data["b_hi" if lp_data["open"] else "b_lo"][h12]
                 st.markdown(f"""
                 <div style='background:#0c1122;border:1px solid #1e2d4a;
                             border-radius:6px;padding:14px;margin-top:8px'>
-                  <div style='color:{MUTED};font-size:9px'>LP SUMMARY</div>
+                  <div style='color:{MUTED};font-size:9px'>CURRENT STATE</div>
                   <div style='font-size:11px;color:{TEXT};margin-top:8px'>
-                    Peak response at h={lp_data['horizons'][peak_h]}<br>
-                    Peak β = {peak_b:.3f}<br>
-                    Horizon = {opts['lp_horizon']} months<br>
-                    Bootstrap reps = {opts['n_bootstrap']}
+                    GIPI {lp_data['gipi_last']:.2f} ({lp_data['gipi_month']}) → channels <b>{cur}</b><br>
+                    Response at h={h12} in this state: <b>{b_cur:+.2f} pp</b><br>
+                    Open − closed at h={h12}: {lp_data['diff'][h12]:+.2f} pp
+                    (p = {lp_data['p_diff'][h12]:.3f})<br>
+                    <span style='font-size:9px;color:{MUTED}'>
+                    Paper: headline CPI difference ≈ +0.35 pp at 12 months;
+                    no state-dependence for core CPI or IP.</span>
                   </div>
                 </div>""", unsafe_allow_html=True)
-            s04.update(label="04 — Local Projections  ✓", state="complete", expanded=True)
+            s04.update(label="04 — State-dependent local projections  ✓", state="complete", expanded=True)
         except Exception as e:
             logging.error(f"LP: {e}")
-            s04.update(label="04 — Local Projections  ✗", state="error", expanded=False)
+            s04.update(label="04 — State-dependent local projections  ✗", state="error", expanded=False)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Section 05: VAR / FEVD

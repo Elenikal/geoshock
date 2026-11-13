@@ -1,0 +1,46 @@
+[
+ {
+  "timestamp": "2026-11-13T18:34:54.875349+00:00",
+  "gpr_nowcast": 0.42,
+  "severity_score": 0.0,
+  "regime": "CALM",
+  "cameo_codes": [
+   "204",
+   "195"
+  ],
+  "ais_anomaly": false,
+  "article_count": 50,
+  "llm_used": false,
+  "gpr_anchor_z": 1.038,
+  "anchor_month": "2026-10-01",
+  "headlines": [
+   "Lebanon President Reassures Christians As They Remain Under Pressure",
+   "Chris Van Hollen eyes Senate Majority Leader post - The Washington Informer",
+   "Vance midterm autopsy falls flat among Republicans",
+   "VOTE : Do you think Chuck Schumer should be the next Senate majority leader ? ",
+   "Republicans show little appetite for breaking with Trump after midterm"
+  ]
+ },
+ {
+  "timestamp": "2026-11-13T18:38:05.298442+00:00",
+  "gpr_nowcast": 0.42,
+  "severity_score": 0.0,
+  "regime": "CALM",
+  "cameo_codes": [
+   "204",
+   "195"
+  ],
+  "ais_anomaly": false,
+  "article_count": 50,
+  "llm_used": false,
+  "gpr_anchor_z": 1.038,
+  "anchor_month": "2026-10-01",
+  "headlines": [
+   "Lebanon President Reassures Christians As They Remain Under Pressure",
+   "Chris Van Hollen eyes Senate Majority Leader post - The Washington Informer",
+   "Vance midterm autopsy falls flat among Republicans",
+   "VOTE : Do you think Chuck Schumer should be the next Senate majority leader ? ",
+   "Republicans show little appetite for breaking with Trump after midterm"
+  ]
+ }
+]

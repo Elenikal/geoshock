@@ -142,6 +142,19 @@ GPR_URL = "https://www.matteoiacoviello.com/gpr_files/data_gpr_export.xls"
 GSCPI_URL = "https://www.newyorkfed.org/medialibrary/media/research/gscpi/downloads/GSCPI_data.xlsx"
 
 
+def read_gpr_xls(content: bytes) -> pd.DataFrame:
+    """Parse data_gpr_export.xls whatever row the header sits on.
+    Returns a monthly-indexed frame with the file's columns (GPR, GPRT, GPRA, …)."""
+    raw = pd.read_excel(io.BytesIO(content), sheet_name=0, header=None, engine="xlrd")
+    hdr = next(i for i in range(min(10, len(raw)))
+               if {"month", "GPRT"} <= {str(v).strip() for v in raw.iloc[i].values})
+    df = raw.iloc[hdr + 1:].copy()
+    df.columns = [str(c).strip() for c in raw.iloc[hdr].values]
+    df = df.set_index(pd.to_datetime(df["month"], errors="coerce"))
+    df = df[df.index.notna()]
+    return df.drop(columns=["month"]).apply(pd.to_numeric, errors="coerce")
+
+
 def fetch_gpr_index() -> pd.Series:
     """
     Download the Caldara-Iacoviello Geopolitical Risk (GPR) Index.
@@ -152,28 +165,22 @@ def fetch_gpr_index() -> pd.Series:
     """
     log.info("Fetching GPR index from Iacoviello website …")
     try:
-        # Prefer local cached xls if present (LOCAL TEST: data_gpr_export.xls in repo root)
-        _local = Path(__file__).parent.parent / "data_gpr_export.xls"
-        if _local.exists():
-            log.info(f"  using local xls: {_local}")
+        # Live download first; fall back to the pinned April-2026 vintage.
+        try:
+            r = requests.get(GPR_URL, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
+            r.raise_for_status()
+            content = r.content
+            log.info("  GPR: downloaded live file")
+        except Exception as e:
+            _local = Path(__file__).parent / "data_gpr_export_2026-04.xls"
+            _no_synthetic(f"GPR live download ({e})")
+            log.warning(f"  GPR live download failed ({e}); using pinned {_local.name}")
             content = _local.read_bytes()
-        else:
-            resp = requests.get(GPR_URL, timeout=30)
-            resp.raise_for_status()
-            content = resp.content
         resp = type("R", (), {"content": content})()  # shim for downstream code
 
-        # The Excel file has a blank first row; actual headers are in row 1
-        df = pd.read_excel(io.BytesIO(resp.content), sheet_name=0, header=1, engine="xlrd")
-        df.columns = [str(c).strip() for c in df.columns]
-
-        # LOCAL TEST: GPRT (threats subindex) + GIPI v2 — the combined save.
+        df = read_gpr_xls(resp.content)
         target_col = "GPRT"
-        if target_col not in df.columns:
-            raise KeyError(f"{target_col} not found in columns: {df.columns[:10].tolist()}")
-
-        df["date"] = pd.to_datetime(df["month"])
-        s = df.set_index("date")[target_col].astype(float)
+        s = df[target_col].astype(float)
         s.name = "gpr"
         s = s.dropna()
         s = s[s.index >= cfg.START_DATE]
@@ -181,6 +188,7 @@ def fetch_gpr_index() -> pd.Series:
         return s
 
     except Exception as e:
+        _no_synthetic(f"GPRT ({e})")      # FRED fallback is EPU, not GPR
         log.warning(f"  GPR direct download failed ({e}). Trying FRED fallback …")
         return _fetch_gpr_fred()
 
@@ -188,6 +196,7 @@ def fetch_gpr_index() -> pd.Series:
 def _fetch_gpr_fred() -> pd.Series:
     """Fallback: fetch GPR from FRED series GEPUCURRENT."""
     if not FRED_AVAILABLE:
+        _no_synthetic("GPR")
         log.error("fredapi not available either. Returning synthetic GPR for demo.")
         return _synthetic_gpr()
     fred = Fred(api_key=cfg.FRED_KEY)
@@ -240,6 +249,7 @@ FRED_CORE = {
     "A191RL1Q225SBEA":   "gdp_growth",   # quarterly → interpolated
     "GDPC1":             "gdp_level",    # quarterly
     "BAMLH0A0HYM2":      "hy_spread",
+    "BAA10Y":            "baa_spread",   # long-history credit spread (HY OAS fallback)
     "T10Y2Y":            "term_spread",
     "GS10":              "gs10",
     "FEDFUNDS":          "fedfunds",
@@ -288,7 +298,8 @@ def fetch_fred_series(series_map: dict | None = None) -> pd.DataFrame:
     if series_map is None:
         series_map = combined
 
-    if not FRED_AVAILABLE:
+    if not FRED_AVAILABLE or not cfg.FRED_KEY:
+        _no_synthetic("FRED")
         log.warning("fredapi unavailable — generating synthetic FRED data for demo.")
         return _synthetic_fred(series_map)
 
@@ -408,7 +419,7 @@ def fetch_arab_light_eia() -> pd.Series:
                 {d: v for d, v in data_rows},
                 name="arab_light"
             ).sort_index()
-            s.index = s.index.to_period("M").to_timestamp("MS")
+            s.index = s.index.to_period("M").to_timestamp(how="start")
             s = s[s.index >= cfg.START_DATE]
             log.info(f"  EIA Arab Light: {len(s)} obs ({s.index[0].date()} → {s.index[-1].date()})")
             return s
@@ -526,6 +537,7 @@ def fetch_yahoo_data(tickers: dict | None = None) -> pd.DataFrame:
         tickers = YF_MAP
 
     if not YF_AVAILABLE:
+        _no_synthetic("Yahoo Finance")
         log.warning("yfinance unavailable — generating synthetic market data.")
         return _synthetic_yahoo(tickers)
 
@@ -574,72 +586,63 @@ def _synthetic_yahoo(tickers: dict) -> pd.DataFrame:
 #  NY FED  GSCPI
 # ═══════════════════════════════════════════════════════════════════════════════
 
+GSCPI_URLS = [
+    "https://www.newyorkfed.org/medialibrary/research/interactives/gscpi/downloads/gscpi_data.xlsx",
+]
+
+
+def _strict() -> bool:
+    """GEOSHOCK_STRICT=1 turns every synthetic-data fallback into an error
+    (used by the automated dashboard build so fake data can never ship)."""
+    return os.getenv("GEOSHOCK_STRICT", "") == "1"
+
+
+def _no_synthetic(what: str) -> None:
+    if _strict():
+        raise RuntimeError(f"{what}: real data unavailable and GEOSHOCK_STRICT=1")
+
+
+def _parse_gscpi_book(content: bytes) -> pd.Series:
+    """Parse the NY Fed GSCPI workbook (sheet 'GSCPI Monthly Data')."""
+    book = pd.read_excel(io.BytesIO(content), sheet_name=None, header=None)
+    sheet = next((v for k, v in book.items() if "monthly" in k.lower()), list(book.values())[-1])
+    dates = pd.to_datetime(sheet.iloc[:, 0], format="%d-%b-%Y", errors="coerce")
+    vals = pd.to_numeric(sheet.iloc[:, 1], errors="coerce")
+    s = pd.Series(vals.values, index=dates).dropna()
+    s = s[s.index.notna()]
+    if len(s) < 100:
+        raise ValueError(f"GSCPI parse found only {len(s)} rows")
+    s.index = s.index.to_period("M").to_timestamp(how="start")
+    return s.rename("gscpi")
+
+
 def fetch_gscpi() -> pd.Series:
     """
-    Fetch NY Fed Global Supply Chain Pressure Index (starts 1998).
-
-    Priority order:
-      1. Local cache file  data/cache/gscpi_data.xls  (hand-downloaded from NY Fed)
-      2. Live NY Fed URL   (CSV format, current as of 2025)
-      3. Synthetic fallback
+    NY Fed Global Supply Chain Pressure Index (monthly, from 1998).
+    Priority: live NY Fed workbook → local data/cache/gscpi_data.xls[x] → synthetic
+    (synthetic raises when GEOSHOCK_STRICT=1).
     """
     log.info("Fetching GSCPI from NY Fed …")
-
-    def _parse_gscpi_df(df: pd.DataFrame) -> pd.Series:
-        df.columns = [str(c).strip() for c in df.columns]
-        date_col = df.columns[0]
-        val_col  = df.columns[1]
-        df[date_col] = pd.to_datetime(df[date_col])
-        s = df.set_index(date_col)[val_col].resample("MS").last()
-        s.name = "gscpi"
-        return s
-
-    # ── 1. Local file (most reliable) ────────────────────────────────────────
-    local_paths = [
-        Path("data/cache/gscpi_data.xls"),
-        Path("data/cache/gscpi_data.xlsx"),
-        Path("data/cache/gscpi_data.csv"),
-    ]
-    for local in local_paths:
-        if local.exists():
-            try:
-                if local.suffix == ".csv":
-                    df = pd.read_csv(local)
-                elif local.suffix == ".xls":
-                    df = pd.read_excel(local, engine="xlrd")
-                else:
-                    df = pd.read_excel(local, engine="openpyxl")
-                s = _parse_gscpi_df(df)
-                log.info(f"  GSCPI (local {local.name}): {len(s)} obs "
-                         f"({s.index[0].date()} → {s.index[-1].date()})")
-                return s
-            except Exception as e:
-                log.warning(f"  GSCPI local read failed ({e}) — trying URL …")
-
-    # ── 2. Live URL (CSV, current NY Fed format) ──────────────────────────────
-    for url in [
-        "https://www.newyorkfed.org/medialibrary/media/research/gscpi/downloads/gscpi_data.csv",
-        "https://www.newyorkfed.org/medialibrary/media/research/gscpi/downloads/GSCPI_data.xlsx",
-    ]:
+    for url in GSCPI_URLS:
         try:
-            resp = requests.get(url, timeout=30)
+            resp = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
             resp.raise_for_status()
-            if b"<!DOCTYPE" in resp.content[:200]:
-                continue   # HTML error page
-            if url.endswith(".csv"):
-                df = pd.read_csv(io.StringIO(resp.content.decode("utf-8")))
-            else:
-                df = pd.read_excel(io.BytesIO(resp.content), engine="openpyxl")
-            s = _parse_gscpi_df(df)
-            log.info(f"  GSCPI (URL): {len(s)} obs "
-                     f"({s.index[0].date()} → {s.index[-1].date()})")
-            # Save to cache for next run
-            s.to_csv("data/cache/gscpi_data.csv", header=True)
+            s = _parse_gscpi_book(resp.content)
+            log.info(f"  GSCPI (URL): {len(s)} obs ({s.index[0].date()} → {s.index[-1].date()})")
             return s
         except Exception as e:
-            log.debug(f"  GSCPI URL {url} failed: {e}")
+            log.warning(f"  GSCPI URL failed ({e})")
 
-    # ── 3. Synthetic fallback ─────────────────────────────────────────────────
+    for local in [Path("data/cache/gscpi_data.xls"), Path("data/cache/gscpi_data.xlsx")]:
+        if local.exists():
+            try:
+                s = _parse_gscpi_book(local.read_bytes())
+                log.info(f"  GSCPI (local {local.name}): {len(s)} obs → {s.index[-1].date()}")
+                return s
+            except Exception as e:
+                log.warning(f"  GSCPI local read failed ({e})")
+
+    _no_synthetic("GSCPI")
     log.warning("  GSCPI fetch failed — generating synthetic (results unreliable).")
     dates = pd.date_range("1998-01-01", _end_date(), freq="MS")
     np.random.seed(789)
@@ -648,20 +651,68 @@ def fetch_gscpi() -> pd.Series:
     return s
 
 
+GIPI_START = "1998-01-01"            # first month of GSCPI
+GIPI_IMPUTE = ["d_breakeven_5y"]     # T5YIE starts 2003-02; set to its mean before then
+GIPI_DIAG_FILE = Path(__file__).resolve().parent.parent / "outputs" / "gipi_pca.json"
+
+
+def build_gipi_canonical(
+    gipi_df: pd.DataFrame,
+    start: str = GIPI_START,
+    impute: list[str] | None = None,
+) -> tuple[pd.Series, dict]:
+    """
+    Canonical GIPI (paper §III.C).
+
+    Sample starts at `start`. Columns in `impute` are set to their sample
+    mean (zero after standardisation) where missing; every other input
+    must be observed. Inputs are standardised, PC1 is extracted with the
+    sign fixed so that global energy loads positively, and the score is
+    rescaled to zero mean / unit variance.
+
+    Returns (gipi Series on gipi_df's index, diagnostics dict).
+    """
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+
+    impute = GIPI_IMPUTE if impute is None else impute
+    cols = list(gipi_df.columns)
+    sub = gipi_df[gipi_df.index >= start].copy()
+    required = [c for c in cols if c not in impute]
+    sub = sub.dropna(subset=required)
+    n_imputed = {c: int(sub[c].isna().sum()) for c in impute if c in sub}
+    for c in impute:
+        if c in sub:
+            sub[c] = sub[c].fillna(sub[c].mean())
+
+    X = StandardScaler().fit_transform(sub.values)
+    pca = PCA().fit(X)
+    comps = pca.components_.copy()
+    e = cols.index("global_energy_yoy") if "global_energy_yoy" in cols else 0
+    for k in range(comps.shape[0]):
+        if comps[k, e] < 0:
+            comps[k] = -comps[k]
+    pc1 = X @ comps[0]
+    gipi = pd.Series((pc1 - pc1.mean()) / pc1.std(ddof=1), index=sub.index, name="gipi")
+
+    diag = {
+        "start": str(sub.index[0].date()), "end": str(sub.index[-1].date()),
+        "n_obs": len(sub), "n_imputed": n_imputed, "inputs": cols,
+        "eigenvalues": pca.explained_variance_.round(4).tolist(),
+        "var_explained": pca.explained_variance_ratio_.round(4).tolist(),
+        "pc1_eigvec": dict(zip(cols, comps[0].round(4))),
+        "pc2_eigvec": dict(zip(cols, comps[1].round(4))),
+        # correlation of each input with PC1 (proper factor loading)
+        "pc1_loading": dict(zip(cols, (comps[0] * np.sqrt(pca.explained_variance_[0])).round(4))),
+    }
+    return gipi.reindex(gipi_df.index), diag
+
 
 def _build_gipi(gipi_df: pd.DataFrame, n_components: int = 1) -> pd.Series:
     """
-    Build the Geopolitical Inflation Pressure Index (GIPI) via PCA.
-
-    GIPI = PC1 of [GSCPI, Import Price YoY, Global Energy YoY,
-                   Global Food YoY, ΔBreakeven 5Y]
-
-    All inputs are standardised before PCA. The sign convention is fixed
-    so that higher GIPI = more inflationary pressure (positive loadings
-    on GSCPI, energy, food; sign-flipped if needed).
-
-    Returns monthly pd.Series named 'gipi', standardised to z-scores.
-    Falls back to equal-weighted mean if fewer than 2 inputs available.
+    Legacy GIPI builder (mean-imputes every input back to the first month
+    with two observed series). Kept for comparison only; the pipeline uses
+    build_gipi_canonical().
     """
     try:
         from sklearn.decomposition import PCA
@@ -733,8 +784,11 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     # ── GPR shock: standardised monthly change ────────────────────────────────
     if "gpr" in df.columns:
         out["gpr_level"] = df["gpr"]
-        out["gpr_yoy"] = df["gpr"].pct_change(12) * 100
-        out["gpr_shock"] = (df["gpr"] - df["gpr"].rolling(24).mean()) / df["gpr"].rolling(24).std()
+        out["gpr_yoy"] = df["gpr"].pct_change(12, fill_method=None) * 100
+        # LP impulse: standardised monthly change ΔGPRT_t / σ(ΔGPRT)  (paper §IV)
+        d_gpr = df["gpr"].diff()
+        out["gpr_shock"] = d_gpr / d_gpr.std()
+        # GaR conditioning state: full-sample z-score of the level
         out["gpr_z"] = (df["gpr"] - df["gpr"].mean()) / df["gpr"].std()
 
     # ── Oil ───────────────────────────────────────────────────────────────────
@@ -742,27 +796,35 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     if oil_col in df.columns:
         out["oil_price"] = df[oil_col]
         out["oil_return"] = np.log(df[oil_col]).diff() * 100        # MoM log return
-        out["oil_yoy"] = df[oil_col].pct_change(12) * 100           # YoY %
+        out["oil_yoy"] = df[oil_col].pct_change(12, fill_method=None) * 100           # YoY %
 
     # ── Industrial Production ─────────────────────────────────────────────────
     if "ip" in df.columns:
         out["ip_growth"] = np.log(df["ip"]).diff() * 100            # MoM log return
-        out["ip_yoy"] = df["ip"].pct_change(12) * 100               # YoY %
+        out["ip_yoy"] = df["ip"].pct_change(12, fill_method=None) * 100               # YoY %
 
     # ── CPI / Inflation ───────────────────────────────────────────────────────
     if "cpi" in df.columns:
-        out["cpi_inflation"] = df["cpi"].pct_change(12) * 100       # YoY CPI inflation
+        out["cpi_inflation"] = df["cpi"].pct_change(12, fill_method=None) * 100       # YoY CPI inflation
         out["cpi_mom"] = np.log(df["cpi"]).diff() * 100             # MoM
     if "core_cpi" in df.columns:
-        out["core_inflation"] = df["core_cpi"].pct_change(12) * 100
+        out["core_inflation"] = df["core_cpi"].pct_change(12, fill_method=None) * 100
 
     # ── GDP ───────────────────────────────────────────────────────────────────
     if "gdp_growth" in df.columns:
         out["gdp_growth"] = df["gdp_growth"]
     if "gdp_level" in df.columns:
-        out["gdp_yoy"] = df["gdp_level"].pct_change(4) * 100        # YoY (quarterly)
+        out["gdp_yoy"] = df["gdp_level"].pct_change(4, fill_method=None) * 100        # YoY (quarterly)
 
     # ── Financial conditions ─────────────────────────────────────────────────
+    # Since 2026 FRED serves ICE BofA HY OAS for the last 3 years only. When the
+    # HY history is short, use Moody's Baa–10Y spread instead (logged and flagged).
+    if ("hy_spread" in df.columns and df["hy_spread"].notna().sum() < 120
+            and "baa_spread" in df.columns and df["baa_spread"].notna().sum() >= 120):
+        log.warning("  HY OAS history < 10y — credit spread = Moody's Baa–10Y (BAA10Y)")
+        df = df.copy()
+        df["hy_spread"] = df["baa_spread"]
+        out["credit_spread_source"] = "BAA10Y"
     if "hy_spread" in df.columns:
         out["hy_spread"] = df["hy_spread"]
         out["d_hy_spread"] = df["hy_spread"].diff()
@@ -783,7 +845,7 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     # ── S&P 500 ───────────────────────────────────────────────────────────────
     if "sp500" in df.columns:
         out["sp500_return"] = np.log(df["sp500"]).diff() * 100
-        out["sp500_yoy"] = df["sp500"].pct_change(12) * 100
+        out["sp500_yoy"] = df["sp500"].pct_change(12, fill_method=None) * 100
 
     # ── Unemployment ─────────────────────────────────────────────────────────
     if "unemp" in df.columns:
@@ -805,29 +867,29 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # 2. Import prices (cost-push / supply chain channel)
     if "import_price_all" in df.columns:
-        out["import_price_yoy"]      = df["import_price_all"].pct_change(12) * 100
-        out["import_price_mom"]      = df["import_price_all"].pct_change(1) * 100
+        out["import_price_yoy"]      = df["import_price_all"].pct_change(12, fill_method=None) * 100
+        out["import_price_mom"]      = df["import_price_all"].pct_change(1, fill_method=None) * 100
     if "import_price_xfuel" in df.columns:
-        out["import_xfuel_yoy"]      = df["import_price_xfuel"].pct_change(12) * 100
+        out["import_xfuel_yoy"]      = df["import_price_xfuel"].pct_change(12, fill_method=None) * 100
 
     # 3. Broader energy prices (gas + coal + oil, not just WTI)
     if "global_energy_idx" in df.columns:
-        out["global_energy_yoy"]     = df["global_energy_idx"].pct_change(12) * 100
+        out["global_energy_yoy"]     = df["global_energy_idx"].pct_change(12, fill_method=None) * 100
     if "henry_hub" in df.columns:
         out["natgas_return"]         = np.log(df["henry_hub"]).diff() * 100
 
     # 4. Global food prices (Black Sea / MENA food channel)
     if "global_food_idx" in df.columns:
-        out["global_food_yoy"]       = df["global_food_idx"].pct_change(12) * 100
+        out["global_food_yoy"]       = df["global_food_idx"].pct_change(12, fill_method=None) * 100
     if "fao_food" in df.columns:
-        out["fao_food_yoy"]          = df["fao_food"].pct_change(12) * 100
+        out["fao_food_yoy"]          = df["fao_food"].pct_change(12, fill_method=None) * 100
     if "fao_cereals" in df.columns:
-        out["fao_cereals_yoy"]       = df["fao_cereals"].pct_change(12) * 100
+        out["fao_cereals_yoy"]       = df["fao_cereals"].pct_change(12, fill_method=None) * 100
 
     # 5. USD index (pass-through amplifier — stronger dollar → lower import costs)
     if "usd_index" in df.columns:
         out["usd_return"]            = np.log(df["usd_index"]).diff() * 100
-        out["usd_yoy"]               = df["usd_index"].pct_change(12) * 100
+        out["usd_yoy"]               = df["usd_index"].pct_change(12, fill_method=None) * 100
 
     # 6. Arab Light–WTI spread (geopolitical oil premium)
     if "arab_light" in df.columns and ("wti" in df.columns or "wti_spot" in df.columns):
@@ -842,9 +904,9 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # 7. Energy CPI & PPI components (inflation pass-through measurement)
     if "cpi_energy" in df.columns:
-        out["cpi_energy_yoy"]        = df["cpi_energy"].pct_change(12) * 100
+        out["cpi_energy_yoy"]        = df["cpi_energy"].pct_change(12, fill_method=None) * 100
     if "ppi_energy" in df.columns:
-        out["ppi_energy_yoy"]        = df["ppi_energy"].pct_change(12) * 100
+        out["ppi_energy_yoy"]        = df["ppi_energy"].pct_change(12, fill_method=None) * 100
 
     # 8. SPR stocks change (supply buffer — drawdown = geopolitical response)
     if "spr_stocks" in df.columns:
@@ -881,10 +943,17 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         if col in out.columns and out[col].notna().sum() >= 12:
             gipi_inputs[col] = out[col]
 
-    if gipi_inputs:
+    if len(gipi_inputs) == len(_GIPI_CANONICAL):
+        import json
         gipi_df = pd.DataFrame(gipi_inputs)
-        out["gipi"] = _build_gipi(gipi_df)
-        log.info(f"  GIPI built from: {list(gipi_inputs.keys())}")
+        out["gipi"], diag = build_gipi_canonical(gipi_df)
+        # Robustness: complete-case GIPI (2003+, no imputation)
+        out["gipi_cc"], diag_cc = build_gipi_canonical(gipi_df, start="2003-02-01", impute=[])
+        GIPI_DIAG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        GIPI_DIAG_FILE.write_text(json.dumps({"main": diag, "complete_case": diag_cc},
+                                             indent=2, default=float))
+        log.info(f"  GIPI: {diag['start']}→{diag['end']}, N={diag['n_obs']}, "
+                 f"PC1 var={diag['var_explained'][0]:.1%}")
     else:
         log.warning("  GIPI: no valid inputs found — column will be NaN. "
                     "Delete data/cache/ and re-run to force fresh fetch.")
@@ -928,7 +997,7 @@ class DataPipeline:
     CACHE_FILE = Path("data/cache/master_dataset.parquet")
     RAW_FILE   = Path("data/cache/raw_merged.parquet")
     # Bump this when adding new columns — forces cache rebuild automatically
-    CACHE_VERSION = "v2.1"
+    CACHE_VERSION = "v2.2"   # v2.2: ΔGPRT shock, GIPI 1998+ unit-variance
     CACHE_VERSION_FILE = Path("data/cache/.cache_version")
 
     def __init__(self):
@@ -1002,6 +1071,21 @@ class DataPipeline:
         log.info(f"Date range: {features.index[0].date()} → {features.index[-1].date()}")
         log.info(f"Cached to: {self.CACHE_FILE}")
 
+        return features
+
+    # ─────────────────────────────────────────────────────────────────────────
+    def rebuild_from_raw(self, raw_path: Path | str | None = None) -> pd.DataFrame:
+        """Re-engineer features from a saved raw merge (no API calls).
+        Keeps the data vintage fixed for replication."""
+        raw_path = Path(raw_path) if raw_path else self.RAW_FILE
+        if not raw_path.exists():
+            raise FileNotFoundError(f"{raw_path} not found — run build() first.")
+        raw = pd.read_parquet(raw_path)
+        features = engineer_features(raw).sort_index()
+        self.raw_, self.features_ = raw, features
+        features.to_parquet(self.CACHE_FILE)
+        self._write_cache_version()
+        log.info(f"Rebuilt features from raw: {features.shape}")
         return features
 
     # ─────────────────────────────────────────────────────────────────────────

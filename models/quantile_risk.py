@@ -162,7 +162,35 @@ class GaRResult:
     gar_5: float = 0.0                    # 5th percentile forecast
     gar_25: float = 0.0                   # 25th percentile forecast
     median_forecast: float = 0.0
-    conditional_skewness: float = 0.0
+    conditional_skewness: float = 0.0     # Bowley quartile skewness
+    # Inference (filled by GrowthAtRisk.bootstrap_inference)
+    coef_se: dict[float, dict[str, float]] = field(default_factory=dict)
+    coef_p:  dict[float, dict[str, float]] = field(default_factory=dict)
+    y: pd.Series | None = None            # estimation-sample outcome y_{t+h}
+    origin: pd.Timestamp | None = None    # date of x_T used for the nowcast
+    crossing: bool = False                # nowcast quantiles needed rearrangement
+
+
+def _block_bootstrap_qr_se(
+    Y: np.ndarray, X: np.ndarray, quantiles: list[float],
+    B: int = 500, block: int = 12, seed: int = 0,
+) -> dict[float, np.ndarray]:
+    """Moving-block (Künsch 1989) bootstrap SEs of quantile-regression slopes.
+    X includes the constant in column 0; returned SEs exclude it."""
+    rng = np.random.default_rng(seed)
+    n = len(Y)
+    block = min(block, n // 4)
+    n_blocks = int(np.ceil(n / block))
+    draws = {q: np.empty((B, X.shape[1] - 1)) for q in quantiles}
+    for b in range(B):
+        starts = rng.integers(0, n - block + 1, n_blocks)
+        ix = np.concatenate([np.arange(s, s + block) for s in starts])[:n]
+        for q in quantiles:
+            try:
+                draws[q][b] = QuantReg(Y[ix], X[ix]).fit(q=q, max_iter=5000).params[1:]
+            except Exception:
+                draws[q][b] = np.nan
+    return {q: np.nanstd(d, axis=0, ddof=1) for q, d in draws.items()}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -230,203 +258,120 @@ class GrowthAtRisk:
         self,
         horizons: list[int] | None = None,
         verbose: bool = True,
+        nowcast_overrides: dict[str, float] | None = None,
     ) -> dict[int, GaRResult]:
         """
-        Fit quantile regression at each horizon in `horizons`.
+        Fit quantile regressions at each horizon and evaluate the predictive
+        quantiles at the latest month with complete predictors (x_T).
 
-        Specification:
-          Baseline: Q_τ(y|x) = α + β·GPR + γ·FCI + η·y_lag
-          Enhanced: Q_τ(y|x) = α + β·GPR + γ·FCI + δ·GIPI + ζ·(GPR×GIPI) + η·y_lag
+          Baseline: Q_τ(y_{t+h}|x_t) = α + β·GPR_t + γ·FCI_t + η·y_t
+          Enhanced: … + δ·GIPI_{t-1} + ζ·(GPR_t × GIPI_{t-1})
+
+        nowcast_overrides : optional {column: value} applied to x_T only
+            (e.g. {"gpr_z": Layer-0 nowcast}); never enters estimation.
         """
-        if not (SM_AVAILABLE or SKL_AVAILABLE):
-            raise ImportError("statsmodels or scikit-learn required.")
+        if not SM_AVAILABLE:
+            raise ImportError("statsmodels required.")
+        horizons = horizons or [self.horizon]
 
-        if horizons is None:
-            horizons = [self.horizon]
-
-        # Build FCI
         self.fci_ = build_fci(self.df)
         df = self.df.copy()
         df["fci"] = self.fci_
 
-        # Build GPR × GIPI interaction.
-        # Endogeneity treatment (C1): use GIPI_{t-1} in the interaction when
-        # lag_gipi=True (default).  Pre-shock channel openness is predetermined
-        # and cannot be driven by y_{t+h}, breaking the contemporaneous
-        # simultaneity between GIPI_t and IP_t.
-        if self.use_interaction and self.gipi_col:
-            gpr_z = (df[self.gpr_col] - df[self.gpr_col].mean()) / (df[self.gpr_col].std() + 1e-9)
-            gipi_raw = df[self.gipi_col]
-            if self.lag_gipi:
-                gipi_raw = gipi_raw.shift(1)   # GIPI_{t-1}: predetermined at forecast origin
-                log.info("GaR: using GIPI_{t-1} in interaction (endogeneity control)")
-            gipi_z = (gipi_raw - gipi_raw.mean()) / (gipi_raw.std() + 1e-9)
-            df["gpr_x_gipi"] = gpr_z * gipi_z
-            # Also store the (possibly lagged) GIPI column used in the regression
+        if self.gipi_col:
+            gipi_raw = df[self.gipi_col].shift(1) if self.lag_gipi else df[self.gipi_col]
             df["gipi_reg"] = gipi_raw
-            log.info(f"GaR: GPR × GIPI{'_{t-1}' if self.lag_gipi else '_t'} "
-                     f"interaction term constructed. "
-                     "Both variables standardised before multiplication (M3).")
 
+        # Apply overrides to the nowcast origin before building the interaction,
+        # standardising with moments that exclude the overridden value.
+        origin_cols = [self.gpr_col, "fci", self.outcome] + (["gipi_reg"] if self.gipi_col else [])
+        self.origin_ = df[origin_cols].dropna().index[-1]
+        gpr_mu, gpr_sd = df[self.gpr_col].mean(), df[self.gpr_col].std()
+        for col, val in (nowcast_overrides or {}).items():
+            df.loc[self.origin_, col] = val
+
+        if self.use_interaction:
+            g = df["gipi_reg"]
+            df["gpr_x_gipi"] = ((df[self.gpr_col] - gpr_mu) / gpr_sd) * ((g - g.mean()) / g.std())
+
+        self._design: dict[int, tuple] = {}
         for h in horizons:
-            if verbose:
-                log.info(f"GaR: fitting horizon h={h}")
-            result = self._fit_horizon(df, h, verbose)
-            self.results_[h] = result
-
+            self.results_[h] = self._fit_horizon(df, h, verbose)
         return self.results_
 
     # ─────────────────────────────────────────────────────────────────────────
+    def pred_cols_(self) -> list[str]:
+        cols = [self.gpr_col, "fci"]
+        if self.gipi_col:
+            cols.append("gipi_reg")
+        if self.use_interaction:
+            cols.append("gpr_x_gipi")
+        return cols + [self.outcome]
+
     def _fit_horizon(self, df: pd.DataFrame, h: int, verbose: bool) -> GaRResult:
-        # Outcome h periods ahead
-        y_fwd = df[self.outcome].shift(-h)
-
-        # Build predictor list: GPR, FCI, (GIPI or GIPI_{t-1}), (GPR×GIPI), lagged outcome
-        # Note: if lag_gipi=True, "gipi_reg" holds GIPI_{t-1}; otherwise GIPI_t.
-        pred_cols = []
-        if self.gpr_col in df.columns:
-            pred_cols.append(self.gpr_col)
-        if "fci" in df.columns:
-            pred_cols.append("fci")
-        # Use gipi_reg if available (holds lagged or contemporaneous GIPI per lag_gipi flag)
-        gipi_col_use = "gipi_reg" if "gipi_reg" in df.columns else self.gipi_col
-        if gipi_col_use and gipi_col_use in df.columns:
-            pred_cols.append(gipi_col_use)
-        if self.use_interaction and "gpr_x_gipi" in df.columns:
-            pred_cols.append("gpr_x_gipi")
-        if self.outcome in df.columns:
-            pred_cols.append(self.outcome)   # lagged outcome
-
-        data = pd.concat([y_fwd.rename("y"), df[pred_cols]], axis=1).dropna()
+        pred_cols = self.pred_cols_()
+        Xdf = df[pred_cols].dropna()
+        y_fwd = df[self.outcome].shift(-h).rename("y")
+        data = pd.concat([y_fwd, Xdf], axis=1, join="inner").dropna()
         Y = data["y"].values
-        X_raw = data[pred_cols].values
 
-        # Standardise predictors
-        if SKL_AVAILABLE:
-            scaler = StandardScaler()
-            X = scaler.fit_transform(X_raw)
-        else:
-            X = (X_raw - X_raw.mean(axis=0)) / (X_raw.std(axis=0) + 1e-9)
+        scaler = StandardScaler().fit(data[pred_cols].values)
+        X = sm.add_constant(scaler.transform(data[pred_cols].values))
+        x_T = np.r_[1.0, scaler.transform(Xdf.loc[[self.origin_]].values).ravel()]
 
-        coefs_dict: dict[float, dict[str, float]] = {}
-        fitted_dict: dict[float, pd.Series] = {}
-
+        result = GaRResult(horizon=h, quantiles=self.quantiles)
+        result.y = data["y"]
+        result.origin = self.origin_
         for q in self.quantiles:
-            try:
-                if SM_AVAILABLE:
-                    X_sm = sm.add_constant(X)
-                    qreg = QuantReg(Y, X_sm).fit(q=q, max_iter=2000)
-                    fitted_vals = qreg.fittedvalues
-                    coef_vals = qreg.params[1:]  # drop constant
-                else:
-                    qr = QuantileRegressor(quantile=q, alpha=0, solver="highs")
-                    qr.fit(X, Y)
-                    fitted_vals = qr.predict(X)
-                    coef_vals = qr.coef_
+            fit = QuantReg(Y, X).fit(q=q, max_iter=5000)
+            result.coefs[q] = dict(zip(pred_cols, fit.params[1:]))
+            result.fitted[q] = pd.Series(fit.fittedvalues, index=data.index)
+            result.nowcast[q] = float(fit.params @ x_T)
+        self._design[h] = (Y, X, pred_cols)
 
-                coefs_dict[q] = dict(zip(pred_cols, coef_vals))
-                fitted_dict[q] = pd.Series(fitted_vals, index=data.index)
-
-            except Exception as e:
-                log.debug(f"  Quantile {q} at h={h} failed: {e}")
-                coefs_dict[q] = {}
-                fitted_dict[q] = pd.Series(np.nan, index=data.index)
-
-        # Nowcast: predict at last available observation
-        result = GaRResult(
-            horizon=h,
-            quantiles=self.quantiles,
-            coefs=coefs_dict,
-            fitted=fitted_dict,
-        )
-        result = self._compute_nowcast(result, data, X, pred_cols)
         result = self._compute_tail_metrics(result)
-
         if verbose:
-            log.info(
-                f"  h={h}: GaR5={result.gar_5:.2f}%  "
-                f"Median={result.median_forecast:.2f}%  "
-                f"P(rec)={result.prob_recession:.1%}"
-            )
+            log.info(f"  h={h} origin={self.origin_.date()}: GaR5={result.gar_5:.2f}%  "
+                     f"Median={result.median_forecast:.2f}%  P(rec)={result.prob_recession:.1%}")
         return result
 
     # ─────────────────────────────────────────────────────────────────────────
-    def _compute_nowcast(
-        self,
-        result: GaRResult,
-        data: pd.DataFrame,
-        X: np.ndarray,
-        pred_cols: list[str],
-    ) -> GaRResult:
-        """Evaluate fitted quantiles at the latest data point."""
-        if len(X) == 0:
-            return result
-
-        x_last = X[-1:, :]
-        h = result.horizon
-
-        for q in self.quantiles:
-            if not result.coefs.get(q):
-                result.nowcast[q] = np.nan
-                continue
-            try:
-                coef_vals = np.array([result.coefs[q].get(c, 0) for c in pred_cols])
-                # Use last fitted value as nowcast for both SM and sklearn paths.
-                # For SM: fitted values are from statsmodels (includes intercept).
-                # For sklearn: fitted values from qr.predict(X) already include
-                # the intercept, so iloc[-1] is the correct nowcast.
-                fitted = result.fitted[q]
-                if len(fitted) > 0 and not np.isnan(fitted.iloc[-1]):
-                    result.nowcast[q] = float(fitted.iloc[-1])
-                else:
-                    result.nowcast[q] = np.nan
-            except Exception:
-                result.nowcast[q] = np.nan
-
-        return result
+    def bootstrap_inference(self, B: int = 500, block: int | None = None, seed: int = 0) -> None:
+        """Moving-block bootstrap SEs and two-sided normal p-values for all
+        coefficients. Block length defaults to h + 12 to cover the MA
+        structure of overlapping YoY outcomes."""
+        for h, (Y, X, pred_cols) in self._design.items():
+            se = _block_bootstrap_qr_se(Y, X, self.quantiles, B=B, block=block or h + 12, seed=seed)
+            r = self.results_[h]
+            for q in self.quantiles:
+                b = np.array([r.coefs[q][c] for c in pred_cols])
+                s = se[q]
+                r.coef_se[q] = dict(zip(pred_cols, s))
+                r.coef_p[q] = dict(zip(pred_cols, 2 * (1 - norm.cdf(np.abs(b / s)))))
 
     # ─────────────────────────────────────────────────────────────────────────
     def _compute_tail_metrics(self, result: GaRResult) -> GaRResult:
-        """Compute tail risk statistics from nowcast quantile distribution."""
-        nc = result.nowcast
-        qs = sorted([q for q in nc if not np.isnan(nc.get(q, np.nan))])
-        vals = [nc[q] for q in qs]
+        """Tail metrics from the nowcast quantiles (after monotone rearrangement)."""
+        qs = sorted(result.nowcast)
+        vals = np.sort([result.nowcast[q] for q in qs])   # Chernozhukov et al. (2010) rearrangement
+        result.crossing = bool(np.any(np.diff([result.nowcast[q] for q in qs]) < 0))
+        nc = dict(zip(qs, vals))
+        result.nowcast = nc
 
-        if len(qs) < 3:
-            return result
-
-        result.gar_5  = nc.get(0.05, np.nan)
+        result.gar_5 = nc.get(0.05, np.nan)
         result.gar_25 = nc.get(0.25, np.nan)
         result.median_forecast = nc.get(0.50, np.nan)
+        q25, q50, q75 = nc[0.25], nc[0.50], nc[0.75]
+        # Bowley (1920) quartile skewness, in [-1, 1]; < 0 = longer left tail
+        iqr = q75 - q25
+        result.conditional_skewness = (q75 + q25 - 2 * q50) / iqr if iqr > 1e-9 else np.nan
 
-        # Conditional skewness — Bowley (1920) quartile skewness:
-        #   Skew = (Q75 - Q50) / (Q50 - Q25)
-        # Consistent with Table 3 in the paper (M1 fix).
-        # Negative = left-skewed (fat left tail); positive = right-skewed.
-        q25 = nc.get(0.25, np.nan)
-        q50 = nc.get(0.50, np.nan)
-        q75 = nc.get(0.75, np.nan)
-        if not any(np.isnan([q25, q50, q75])):
-            denom = q50 - q25
-            if abs(denom) > 1e-6:
-                result.conditional_skewness = (q75 - q50) / denom
-
-        # Tail probabilities: fit normal to quantile estimates
-        try:
-            q10 = nc.get(0.10, np.nan)   # must be extracted from nc
-            q90 = nc.get(0.90, np.nan)
-            mu  = q50
-            if np.isnan(q10) or np.isnan(q90) or np.isnan(mu):
-                raise ValueError("insufficient quantiles for tail prob")
-            sigma = (q90 - q10) / (norm.ppf(0.90) - norm.ppf(0.10))
-            sigma = max(sigma, 0.1)
-            result.prob_neg_growth = float(norm.cdf(0,  loc=mu, scale=sigma))
-            result.prob_recession  = float(norm.cdf(-2, loc=mu, scale=sigma))
-        except Exception:
-            result.prob_neg_growth = np.nan
-            result.prob_recession  = np.nan
-
+        # Tail probabilities from a Gaussian matched to median and the 10–90 range
+        sigma = max((nc[0.90] - nc[0.10]) / (norm.ppf(0.90) - norm.ppf(0.10)), 0.1)
+        result.prob_neg_growth = float(norm.cdf(0, loc=q50, scale=sigma))
+        result.prob_recession = float(norm.cdf(-2, loc=q50, scale=sigma))
         return result
+
 
     # ─────────────────────────────────────────────────────────────────────────
     def plot_fan_chart(
@@ -666,446 +611,175 @@ class GrowthAtRisk:
 
 @dataclass
 class RobustnessResult:
-    """Stores all three robustness check outputs."""
-    # 1. Orthogonalization
-    orth_coefs:          dict[int, dict[float, float]] = field(default_factory=dict)
-    orth_significant:    dict[int, bool]               = field(default_factory=dict)
-
-    # 2. LASSO-QR selected variables
-    lasso_selected:      dict[int, dict[float, list[str]]] = field(default_factory=dict)
-    lasso_coefs:         dict[int, dict[float, dict[str, float]]] = field(default_factory=dict)
-
-    # 3. Model comparison (pseudo-R² + pinball loss)
-    pinball_baseline:    dict[int, dict[float, float]] = field(default_factory=dict)
-    pinball_enhanced:    dict[int, dict[float, float]] = field(default_factory=dict)
-    pseudo_r2_baseline:  dict[int, dict[float, float]] = field(default_factory=dict)
-    pseudo_r2_enhanced:  dict[int, dict[float, float]] = field(default_factory=dict)
-    improvement:         dict[int, dict[float, float]] = field(default_factory=dict)  # % pinball improvement
+    """Outputs of the three pre-specified checks."""
+    orth_coefs: dict[int, dict[float, float]] = field(default_factory=dict)
+    orth_se:    dict[int, dict[float, float]] = field(default_factory=dict)
+    orth_p:     dict[int, dict[float, float]] = field(default_factory=dict)
+    lasso_alpha:    dict[int, float] = field(default_factory=dict)
+    lasso_selected: dict[int, dict[float, list[str]]] = field(default_factory=dict)
+    lasso_coefs:    dict[int, dict[float, dict[str, float]]] = field(default_factory=dict)
+    pinball_baseline:   dict[int, dict[float, float]] = field(default_factory=dict)
+    pinball_enhanced:   dict[int, dict[float, float]] = field(default_factory=dict)
+    pseudo_r2_baseline: dict[int, dict[float, float]] = field(default_factory=dict)
+    pseudo_r2_enhanced: dict[int, dict[float, float]] = field(default_factory=dict)
+    improvement:        dict[int, dict[float, float]] = field(default_factory=dict)
 
 
 class GaRRobustness:
     """
-    Three robustness checks for the GIPI-enhanced Growth-at-Risk model.
+    Three pre-specified checks on the enhanced GaR specification.
 
-    ─────────────────────────────────────────────────────────────────────
-    CHECK 1 — ORTHOGONALISATION
-    ─────────────────────────────────────────────────────────────────────
-    Regress GIPI on GPR shock to isolate the non-GPR component:
-
-        GIPI_resid_t = GIPI_t - proj(GIPI_t | GPR_t)
-
-    Then re-estimate:
-        Q_τ(y_{t+h}) = α + β·GPR + γ·FCI + δ·GIPI_resid + η·y_lag
-
-    If δ_τ remains significant at the lower tail quantiles (τ ≤ 0.10),
-    it confirms that GIPI adds genuine information BEYOND what GPR already
-    captures — i.e. the inflation-channel transmission is not just a
-    mechanical function of geopolitical risk itself.
-
-    ─────────────────────────────────────────────────────────────────────
-    CHECK 2 — LASSO QUANTILE REGRESSION
-    ─────────────────────────────────────────────────────────────────────
-    Expand the predictor set to ALL individual GIPI components (GSCPI,
-    import price, energy, food, breakeven) and apply L1-penalised
-    quantile regression (sklearn QuantileRegressor with alpha > 0):
-
-        min  Σ ρ_τ(y - Xβ) + α·‖β‖₁
-              β
-
-    Variables surviving LASSO shrinkage are those with genuine marginal
-    predictive value at each quantile. Expected to validate that GSCPI
-    and breakeven 5Y are robustly selected at the lower tail.
-
-    The penalty α is chosen via 5-fold cross-validation on pinball loss.
-
-    ─────────────────────────────────────────────────────────────────────
-    CHECK 3 — PSEUDO-R² AND PINBALL LOSS COMPARISON
-    ─────────────────────────────────────────────────────────────────────
-    Compare baseline (GPR + FCI) vs enhanced (+ GIPI + interaction)
-    using two proper scoring rules:
-
-    Pinball loss (quantile loss):
-        L_τ(y, ŷ) = (y - ŷ)·(τ - 1{y < ŷ})
-
-    Koenker-Machado pseudo-R²:
-        R²_τ = 1 - V̂_τ(model) / V̂_τ(null)
-    where V̂_τ(null) = loss of intercept-only model.
-
-    Improvement > 0% at τ = 0.05 and τ = 0.10 confirms the enhanced
-    model better characterises the left tail of the distribution.
-    ─────────────────────────────────────────────────────────────────────
-
-    Usage
-    ─────
-    rob = GaRRobustness(df=df, gipi_col="gipi")
-    result = rob.run(horizons=[3, 6, 12])
-    rob.summary()
+    Check 1 — Orthogonalisation. GIPI_{t-1} is residualised on GPR_t (OLS);
+      Q_τ(y_{t+h}) = α + β·GPR_t + γ·FCI_t + δ⊥·GIPI⊥_{t-1} + η·y_t.
+      δ⊥ inference by moving-block bootstrap (block h+12).
+    Check 2 — LASSO-QR over GPR, FCI, y_t and the five GIPI inputs;
+      penalty chosen per horizon by 5-fold contiguous CV at τ = 0.10.
+    Check 3 — In-sample pinball loss and Koenker–Machado pseudo-R² of the
+      baseline vs the enhanced model (identical spec to GrowthAtRisk).
+      Nested in-sample comparison: the enhanced model weakly dominates by
+      construction, so this is descriptive, not a test.
     """
 
     def __init__(
         self,
-        df:          pd.DataFrame,
-        outcome:     str = "ip_yoy",
-        gpr_col:     str = "gpr_z",
-        gipi_col:    str = "gipi",
+        df: pd.DataFrame,
+        outcome: str = "ip_yoy",
+        gpr_col: str = "gpr_z",
+        gipi_col: str = "gipi",
         gipi_components: list[str] | None = None,
-        quantiles:   list[float] | None = None,
-        lasso_alpha: float | None = None,   # None = cross-validated
+        quantiles: list[float] | None = None,
+        lasso_alpha: float | None = None,
+        bootstrap_reps: int = 500,
     ):
-        self.df              = df.copy()
-        self.outcome         = outcome
-        self.gpr_col         = gpr_col
-        self.gipi_col        = gipi_col
+        self.df = df.copy()
+        self.outcome = outcome
+        self.gpr_col = gpr_col
+        self.gipi_col = gipi_col
         self.gipi_components = gipi_components or [
             "gscpi", "import_price_yoy", "global_energy_yoy",
             "global_food_yoy", "d_breakeven_5y",
         ]
-        self.quantiles   = quantiles or [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
+        self.quantiles = quantiles or [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
         self.lasso_alpha = lasso_alpha
-
-        if not SKL_AVAILABLE:
-            raise ImportError("scikit-learn required for GaRRobustness. "
-                              "pip install scikit-learn")
+        self.bootstrap_reps = bootstrap_reps
 
     # ──────────────────────────────────────────────────────────────────────
     def run(self, horizons: list[int] | None = None) -> RobustnessResult:
-        """Run all three robustness checks. Returns RobustnessResult."""
         horizons = horizons or [3, 6, 12]
-        result   = RobustnessResult()
+        result = RobustnessResult()
+        df = self.df.copy()
+        df["fci"] = build_fci(df)
 
-        # Build FCI once
-        fci = build_fci(self.df)
-        df  = self.df.copy()
-        df["fci"] = fci
-
-        # ── Check 1: Orthogonalisation ────────────────────────────────────
-        log.info("Robustness Check 1: Orthogonalisation (GIPI ⊥ GPR) …")
-        df = self._orthogonalise_gipi(df)
-
+        # Check 1
+        g_lag = df[self.gipi_col].shift(1)
+        sub = pd.concat([g_lag.rename("g"), df[self.gpr_col]], axis=1).dropna()
+        ols = sm.OLS(sub["g"], sm.add_constant(sub[self.gpr_col])).fit()
+        df["gipi_orth"] = ols.resid.reindex(df.index)
+        log.info(f"Check 1: corr(GIPI_t-1, GPR) = {sub.corr().iloc[0, 1]:.3f}")
         for h in horizons:
-            coefs, sig = self._check1_orth(df, h)
-            result.orth_coefs[h]       = coefs
-            result.orth_significant[h] = sig
+            result.orth_coefs[h], result.orth_se[h], result.orth_p[h] = self._check1(df, h)
 
-        # ── Check 2: LASSO-QR ────────────────────────────────────────────
-        log.info("Robustness Check 2: LASSO-QR variable selection …")
-        alpha = self.lasso_alpha or self._cv_lasso_alpha(df)
-        log.info(f"  LASSO α = {alpha:.4f}")
-
+        # Check 2
         for h in horizons:
-            sel, coef = self._check2_lasso(df, h, alpha)
-            result.lasso_selected[h] = sel
-            result.lasso_coefs[h]    = coef
+            alpha = self.lasso_alpha or self._cv_lasso_alpha(df, h)
+            result.lasso_alpha[h] = alpha
+            result.lasso_selected[h], result.lasso_coefs[h] = self._check2_lasso(df, h, alpha)
 
-        # ── Check 3: Pinball loss + pseudo-R² ────────────────────────────
-        log.info("Robustness Check 3: Pinball loss + pseudo-R² comparison …")
+        # Check 3
+        base = GrowthAtRisk(self.df, outcome=self.outcome, gpr_col=self.gpr_col,
+                            gipi_col=None, use_interaction=False, quantiles=self.quantiles)
+        enh = GrowthAtRisk(self.df, outcome=self.outcome, gpr_col=self.gpr_col,
+                           gipi_col=self.gipi_col, use_interaction=True, quantiles=self.quantiles)
+        rb, re = base.fit(horizons, verbose=False), enh.fit(horizons, verbose=False)
         for h in horizons:
-            pb_base, pb_enh, r2_base, r2_enh, impr = self._check3_model_comparison(df, h)
-            result.pinball_baseline[h]   = pb_base
-            result.pinball_enhanced[h]   = pb_enh
-            result.pseudo_r2_baseline[h] = r2_base
-            result.pseudo_r2_enhanced[h] = r2_enh
-            result.improvement[h]        = impr
+            idx = re[h].y.index.intersection(rb[h].y.index)
+            y = re[h].y.loc[idx].values
+            pb_b, pb_e, r2_b, r2_e, imp = {}, {}, {}, {}, {}
+            for q in self.quantiles:
+                null = _pinball_loss(y, np.full(len(y), np.quantile(y, q)), q)
+                pb_b[q] = _pinball_loss(y, rb[h].fitted[q].loc[idx].values, q)
+                pb_e[q] = _pinball_loss(y, re[h].fitted[q].loc[idx].values, q)
+                r2_b[q], r2_e[q] = 1 - pb_b[q] / null, 1 - pb_e[q] / null
+                imp[q] = 100 * (pb_b[q] - pb_e[q]) / pb_b[q]
+            result.pinball_baseline[h], result.pinball_enhanced[h] = pb_b, pb_e
+            result.pseudo_r2_baseline[h], result.pseudo_r2_enhanced[h] = r2_b, r2_e
+            result.improvement[h] = imp
 
         self._result = result
         return result
 
     # ──────────────────────────────────────────────────────────────────────
     def summary(self) -> pd.DataFrame:
-        """Print and return a tidy summary DataFrame."""
-        if not hasattr(self, "_result"):
-            raise RuntimeError("Call .run() first.")
         r = self._result
         rows = []
-        for h in sorted(r.improvement.keys()):
+        for h in sorted(r.improvement):
             for q in self.quantiles:
                 rows.append({
-                    "horizon":          h,
-                    "quantile":         q,
-                    "orth_gipi_coef":   round(r.orth_coefs.get(h, {}).get(q, np.nan), 4),
-                    "orth_significant": r.orth_significant.get(h, False),
-                    "lasso_selected":   ", ".join(r.lasso_selected.get(h, {}).get(q, [])),
-                    "pinball_base":     round(r.pinball_baseline.get(h, {}).get(q, np.nan), 4),
-                    "pinball_enh":      round(r.pinball_enhanced.get(h, {}).get(q, np.nan), 4),
-                    "pinball_impr%":    round(r.improvement.get(h, {}).get(q, np.nan), 2),
-                    "pseudo_r2_base":   round(r.pseudo_r2_baseline.get(h, {}).get(q, np.nan), 4),
-                    "pseudo_r2_enh":    round(r.pseudo_r2_enhanced.get(h, {}).get(q, np.nan), 4),
+                    "horizon": h, "quantile": q,
+                    "orth_gipi_coef": r.orth_coefs[h][q],
+                    "orth_gipi_se": r.orth_se[h][q],
+                    "orth_gipi_p": r.orth_p[h][q],
+                    "lasso_alpha": r.lasso_alpha[h],
+                    "lasso_selected": ", ".join(r.lasso_selected[h].get(q, [])),
+                    "pinball_base": r.pinball_baseline[h][q],
+                    "pinball_enh": r.pinball_enhanced[h][q],
+                    "pinball_impr%": r.improvement[h][q],
+                    "pseudo_r2_base": r.pseudo_r2_baseline[h][q],
+                    "pseudo_r2_enh": r.pseudo_r2_enhanced[h][q],
                 })
-        df = pd.DataFrame(rows)
-        # Print tail-focused summary
-        tail = df[df["quantile"].isin([0.05, 0.10])]
-        log.info("\n=== ROBUSTNESS SUMMARY (tail quantiles) ===\n" + tail.to_string(index=False))
-        return df
+        return pd.DataFrame(rows)
 
     def save(self, path: str = "outputs/robustness_checks.csv") -> None:
-        """Save full robustness table to CSV."""
-        summary = self.summary()
-        summary.to_csv(path, index=False)
+        self.summary().round(4).to_csv(path, index=False)
         log.info(f"Robustness table → {path}")
 
     # ──────────────────────────────────────────────────────────────────────
-    # Internal helpers
-    # ──────────────────────────────────────────────────────────────────────
-
-    def _orthogonalise_gipi(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Residualise GIPI with respect to GPR shock (OLS projection).
-        Adds column 'gipi_orth' to df.
-        """
-        if self.gipi_col not in df.columns or self.gpr_col not in df.columns:
-            log.warning("  Orthogonalisation: GIPI or GPR not found — skipping")
-            df["gipi_orth"] = df.get(self.gipi_col, pd.Series(dtype=float))
-            return df
-
-        sub = df[[self.gipi_col, self.gpr_col]].dropna()
-        if len(sub) < 30:
-            df["gipi_orth"] = df[self.gipi_col]
-            return df
-
-        X = sub[[self.gpr_col]].values
-        y = sub[self.gipi_col].values
-
-        if SM_AVAILABLE:
-            ols = sm.OLS(y, sm.add_constant(X)).fit()
-            resid = ols.resid
-        else:
-            from sklearn.linear_model import LinearRegression
-            lr = LinearRegression().fit(X, y)
-            resid = y - lr.predict(X)
-
-        gipi_orth = pd.Series(resid, index=sub.index, name="gipi_orth")
-        df["gipi_orth"] = gipi_orth.reindex(df.index)
-
-        corr = float(pd.concat([sub[self.gipi_col], gipi_orth], axis=1).corr().iloc[0, 1])
-        log.info(f"  GIPI–GPR correlation before orth: "
-                 f"{float(sub[self.gipi_col].corr(sub[self.gpr_col])):.3f}")
-        log.info(f"  GIPI_orth–GPR correlation after orth: "
-                 f"{float(gipi_orth.corr(sub[self.gpr_col])):.3f}  (target: ~0)")
-        return df
-
-    def _check1_orth(
-        self, df: pd.DataFrame, h: int
-    ) -> tuple[dict[float, float], bool]:
-        """
-        Estimate Q_τ(y_{t+h}) = α + β·GPR + γ·FCI + δ·GIPI_orth + η·y_lag
-        Returns dict[τ → δ_coef] and bool indicating tail significance.
-        """
-        y_fwd = df[self.outcome].shift(-h)
-        cols  = [self.gpr_col, "fci", "gipi_orth", self.outcome]
-        cols  = [c for c in cols if c in df.columns]
-
-        data = pd.concat([y_fwd.rename("y"), df[cols]], axis=1).dropna()
-        if len(data) < 30:
-            return {q: np.nan for q in self.quantiles}, False
-
+    def _check1(self, df: pd.DataFrame, h: int):
+        cols = [self.gpr_col, "fci", "gipi_orth", self.outcome]
+        data = pd.concat([df[self.outcome].shift(-h).rename("y"), df[cols]], axis=1).dropna()
         Y = data["y"].values
-        # Guard: keep only numeric cols (regime Categorical would break StandardScaler)
-        num_cols = [c for c in cols if pd.api.types.is_numeric_dtype(data[c])]
-        cols = num_cols  # update cols so gipi_orth_idx index stays consistent
-        if not cols:
-            return {q: np.nan for q in self.quantiles}, False
-        X = StandardScaler().fit_transform(data[cols].values.astype(float))
-        gipi_orth_idx = cols.index("gipi_orth") if "gipi_orth" in cols else None
+        X = sm.add_constant(StandardScaler().fit_transform(data[cols].values))
+        k = cols.index("gipi_orth")
+        coefs = {q: float(QuantReg(Y, X).fit(q=q, max_iter=5000).params[k + 1])
+                 for q in self.quantiles}
+        se_all = _block_bootstrap_qr_se(Y, X, self.quantiles, B=self.bootstrap_reps, block=h + 12)
+        se = {q: float(se_all[q][k]) for q in self.quantiles}
+        p = {q: float(2 * (1 - norm.cdf(abs(coefs[q] / se[q])))) for q in self.quantiles}
+        return coefs, se, p
 
-        coefs: dict[float, float] = {}
-        for q in self.quantiles:
-            try:
-                if SM_AVAILABLE:
-                    qr = QuantReg(Y, sm.add_constant(X)).fit(q=q, max_iter=2000)
-                    # +1 because add_constant prepends intercept
-                    coefs[q] = float(qr.params[gipi_orth_idx + 1]
-                                     if gipi_orth_idx is not None else np.nan)
-                else:
-                    qr = QuantileRegressor(quantile=q, alpha=0, solver="highs")
-                    qr.fit(X, Y)
-                    coefs[q] = float(qr.coef_[gipi_orth_idx]
-                                     if gipi_orth_idx is not None else np.nan)
-            except Exception:
-                coefs[q] = np.nan
+    def _component_cols(self, df: pd.DataFrame) -> list[str]:
+        return [self.gpr_col, "fci", self.outcome] + [c for c in self.gipi_components if c in df]
 
-        # Significance: tail coefs should be negative and abs > 0.05 in std units
-        tail_coefs = [coefs.get(q, 0.0) for q in [0.05, 0.10]]
-        significant = all((not np.isnan(c)) and c < -0.03 for c in tail_coefs)
+    def _lasso_data(self, df: pd.DataFrame, h: int):
+        cols = self._component_cols(df)
+        data = pd.concat([df[self.outcome].shift(-h).rename("y"), df[cols]], axis=1).dropna()
+        return data["y"].values, StandardScaler().fit_transform(data[cols].values), cols
 
-        log.info(f"  Orth h={h}: δ(τ=0.05)={coefs.get(0.05, np.nan):.3f}  "
-                 f"δ(τ=0.10)={coefs.get(0.10, np.nan):.3f}  "
-                 f"significant={significant}")
-        return coefs, significant
-
-    def _cv_lasso_alpha(self, df: pd.DataFrame, h: int = 6) -> float:
-        """
-        Cross-validate LASSO penalty α using 5-fold CV on pinball loss at τ=0.10.
-        """
-        cols = self._build_component_cols(df)
-        if not cols:
-            return 0.01
-
-        y_fwd = df[self.outcome].shift(-h)
-        data  = pd.concat([y_fwd.rename("y"), df[cols]], axis=1).dropna()
-        if len(data) < 50:
-            return 0.01
-
-        Y = data["y"].values
-        X = StandardScaler().fit_transform(data[cols].values.astype(float))
-        n = len(Y)
-
-        alphas     = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5]
-        best_alpha = 0.01
-        best_loss  = np.inf
-        fold_size  = max(10, n // 5)
-
-        for alpha in alphas:
+    def _cv_lasso_alpha(self, df: pd.DataFrame, h: int) -> float:
+        """5-fold contiguous-block CV on pinball loss at τ = 0.10."""
+        Y, X, _ = self._lasso_data(df, h)
+        n, folds = len(Y), np.array_split(np.arange(len(Y)), 5)
+        best, best_loss = 0.01, np.inf
+        for alpha in [0.001, 0.005, 0.01, 0.05, 0.1, 0.5]:
             losses = []
-            for fold in range(5):
-                val_idx  = list(range(fold * fold_size,
-                                      min((fold + 1) * fold_size, n)))
-                train_idx = [i for i in range(n) if i not in val_idx]
-                if len(train_idx) < 20 or len(val_idx) < 5:
-                    continue
-                try:
-                    qr = QuantileRegressor(quantile=0.10, alpha=alpha, solver="highs")
-                    qr.fit(X[train_idx], Y[train_idx])
-                    preds = qr.predict(X[val_idx])
-                    losses.append(_pinball_loss(Y[val_idx], preds, 0.10))
-                except Exception:
-                    pass
-            if losses and np.mean(losses) < best_loss:
-                best_loss  = np.mean(losses)
-                best_alpha = alpha
+            for val in folds:
+                # drop h months either side of the validation block (overlap)
+                train = np.setdiff1d(np.arange(n), np.arange(val[0] - h, val[-1] + h + 1))
+                qr = QuantileRegressor(quantile=0.10, alpha=alpha, solver="highs").fit(X[train], Y[train])
+                losses.append(_pinball_loss(Y[val], qr.predict(X[val]), 0.10))
+            if np.mean(losses) < best_loss:
+                best, best_loss = alpha, np.mean(losses)
+        return best
 
-        return best_alpha
-
-    def _check2_lasso(
-        self, df: pd.DataFrame, h: int, alpha: float
-    ) -> tuple[dict[float, list[str]], dict[float, dict[str, float]]]:
-        """
-        LASSO-QR on individual GIPI components. Returns selected variables
-        and their coefficients at each quantile.
-        """
-        if not SKL_AVAILABLE:
-            return {q: [] for q in self.quantiles}, {}
-
-        cols = self._build_component_cols(df)
-        if not cols:
-            return {q: [] for q in self.quantiles}, {}
-
-        y_fwd = df[self.outcome].shift(-h)
-        data  = pd.concat([y_fwd.rename("y"), df[cols]], axis=1).dropna()
-        if len(data) < 30:
-            return {q: [] for q in self.quantiles}, {}
-
-        Y     = data["y"].values
-        X     = StandardScaler().fit_transform(data[cols].values.astype(float))
-
-        selected: dict[float, list[str]] = {}
-        coef_out: dict[float, dict[str, float]] = {}
-
+    def _check2_lasso(self, df: pd.DataFrame, h: int, alpha: float):
+        Y, X, cols = self._lasso_data(df, h)
+        selected, coef_out = {}, {}
         for q in self.quantiles:
-            try:
-                qr = QuantileRegressor(quantile=q, alpha=alpha, solver="highs")
-                qr.fit(X, Y)
-                nonzero = [cols[i] for i, c in enumerate(qr.coef_) if abs(c) > 1e-6]
-                selected[q]  = nonzero
-                coef_out[q]  = {cols[i]: round(float(qr.coef_[i]), 4)
-                                for i in range(len(cols)) if abs(qr.coef_[i]) > 1e-6}
-            except Exception:
-                selected[q]  = []
-                coef_out[q]  = {}
-
-        # Log tail-quantile selection
-        for q in [0.05, 0.10]:
-            log.info(f"  LASSO h={h} τ={q}: {selected.get(q,[])}")
-
+            qr = QuantileRegressor(quantile=q, alpha=alpha, solver="highs").fit(X, Y)
+            keep = [i for i, c in enumerate(qr.coef_) if abs(c) > 1e-6]
+            selected[q] = [cols[i] for i in keep]
+            coef_out[q] = {cols[i]: round(float(qr.coef_[i]), 4) for i in keep}
         return selected, coef_out
-
-    def _check3_model_comparison(
-        self, df: pd.DataFrame, h: int
-    ) -> tuple[dict, dict, dict, dict, dict]:
-        """
-        Compare pinball loss and pseudo-R² of baseline vs enhanced model.
-        Returns (pinball_base, pinball_enh, r2_base, r2_enh, improvement%)
-        """
-        y_fwd = df[self.outcome].shift(-h)
-
-        # Baseline predictors: GPR + FCI + lagged outcome
-        base_cols = [c for c in [self.gpr_col, "fci", self.outcome]
-                     if c in df.columns]
-        # Enhanced: + GIPI + interaction
-        enh_cols  = base_cols.copy()
-        if self.gipi_col in df.columns:
-            enh_cols.append(self.gipi_col)
-        if "gpr_x_gipi" in df.columns:
-            enh_cols.append("gpr_x_gipi")
-        elif self.gipi_col in df.columns and self.gpr_col in df.columns:
-            df = df.copy()
-            gpr_z  = (df[self.gpr_col] - df[self.gpr_col].mean()) / df[self.gpr_col].std()
-            gipi_z = (df[self.gipi_col] - df[self.gipi_col].mean()) / df[self.gipi_col].std()
-            df["gpr_x_gipi"] = gpr_z * gipi_z
-            enh_cols.append("gpr_x_gipi")
-
-        all_cols = list(set(base_cols + enh_cols))
-        data = pd.concat([y_fwd.rename("y"), df[all_cols]], axis=1).dropna()
-        if len(data) < 30:
-            empty = {q: np.nan for q in self.quantiles}
-            return empty, empty, empty, empty, empty
-
-        Y = data["y"].values
-
-        pb_base: dict[float, float] = {}
-        pb_enh:  dict[float, float] = {}
-        r2_base: dict[float, float] = {}
-        r2_enh:  dict[float, float] = {}
-        impr:    dict[float, float] = {}
-
-        # Null model pinball (intercept-only)
-        null_pb: dict[float, float] = {}
-        for q in self.quantiles:
-            null_pred = np.full(len(Y), np.quantile(Y, q))
-            null_pb[q] = _pinball_loss(Y, null_pred, q)
-
-        for q in self.quantiles:
-            for spec_cols, store in [(base_cols, pb_base), (enh_cols, pb_enh)]:
-                avail = [c for c in spec_cols if c in data.columns]
-                if not avail:
-                    store[q] = np.nan
-                    continue
-                X = StandardScaler().fit_transform(data[avail].values.astype(float))
-                try:
-                    if SM_AVAILABLE:
-                        qr  = QuantReg(Y, sm.add_constant(X)).fit(q=q, max_iter=2000)
-                        hat = qr.fittedvalues
-                    else:
-                        qr  = QuantileRegressor(quantile=q, alpha=0, solver="highs")
-                        qr.fit(X, Y)
-                        hat = qr.predict(X)
-                    store[q] = _pinball_loss(Y, hat, q)
-                except Exception:
-                    store[q] = np.nan
-
-            # Pseudo-R²
-            r2_base[q] = (1 - pb_base.get(q, np.nan) / null_pb[q]
-                          if null_pb[q] > 0 else np.nan)
-            r2_enh[q]  = (1 - pb_enh.get(q, np.nan) / null_pb[q]
-                          if null_pb[q] > 0 else np.nan)
-
-            # Pinball improvement %
-            pb_b = pb_base.get(q, np.nan)
-            pb_e = pb_enh.get(q, np.nan)
-            impr[q] = (100 * (pb_b - pb_e) / pb_b
-                       if not np.isnan(pb_b) and pb_b > 0 and not np.isnan(pb_e)
-                       else np.nan)
-
-        log.info(f"  Comparison h={h}: pinball impr "
-                 f"τ=0.05={impr.get(0.05,np.nan):.1f}%  "
-                 f"τ=0.10={impr.get(0.10,np.nan):.1f}%  "
-                 f"τ=0.50={impr.get(0.50,np.nan):.1f}%")
-        return pb_base, pb_enh, r2_base, r2_enh, impr
-
-    def _build_component_cols(self, df: pd.DataFrame) -> list[str]:
-        """Build expanded predictor set: FCI + GPR + individual GIPI components."""
-        base = [c for c in [self.gpr_col, "fci", self.outcome] if c in df.columns]
-        comps = [c for c in self.gipi_components if c in df.columns]
-        return base + comps
 
 
 def _pinball_loss(y_true: np.ndarray, y_pred: np.ndarray, q: float) -> float:
@@ -1155,307 +829,3 @@ if __name__ == "__main__":
     fig = gar.plot_fan_chart(horizon=6, save_path="outputs/figures/gar_fan.png")
     fig2 = gar.plot_current_distribution(horizon=6, save_path="outputs/figures/gar_dist.png")
     print("\nSaved fan chart and distribution plot.")
-
-
-# ===============================================================================
-#  PSEUDO OUT-OF-SAMPLE BACKTEST  —  rolling window, Giacomini-White (2006)
-# ===============================================================================
-
-@dataclass
-class OOSResult:
-    """Results from pseudo-OOS rolling-window backtest (Giacomini-White 2006)."""
-    horizon:          int
-    eval_start:       str                    # first OOS evaluation date
-    n_oos:            int                    # number of OOS observations
-    pinball_base:     dict[float, float] = field(default_factory=dict)
-    pinball_enh:      dict[float, float] = field(default_factory=dict)
-    r2_base:          dict[float, float] = field(default_factory=dict)
-    r2_enh:           dict[float, float] = field(default_factory=dict)
-    improvement:      dict[float, float] = field(default_factory=dict)  # % improvement
-    # DM test results: dict[tau -> (stat, p_value)]
-    dm_stat:          dict[float, float] = field(default_factory=dict)
-    dm_pval:          dict[float, float] = field(default_factory=dict)
-
-
-class GaROOS:
-    """
-    Pseudo-out-of-sample evaluation using a fixed rolling estimation window.
-
-    Identification strategy: Giacomini & White (2006, Econometrica).
-    ---------------------------------------------------------------
-    G&W test for equal *conditional* predictive ability between two
-    forecasting methods (model + estimation algorithm jointly).  The key
-    insight is that with a FIXED rolling window of size m, parameter
-    estimation error does NOT vanish asymptotically, so the test remains
-    valid even when the models are nested — no Clark-West correction needed.
-    The test statistic is asymptotically N(0,1) under H0.
-
-    This is exactly appropriate here: baseline (GPR+FCI) is nested inside
-    enhanced (GPR+FCI+GIPI+interaction), and the paper's thesis is that
-    the relationship changed structurally post-2014, so a rolling window
-    is also the right economic choice (avoids contamination from the
-    pre-shale era when GPR→oil→CPI transmission was tight).
-
-    Design
-    ------
-    - Fixed rolling training window of `window` months (default 120 = 10yr).
-    - At each origin t, train on [t-window, t), predict y_{t+h}.
-    - Record per-observation pinball loss for baseline and enhanced.
-    - G&W unconditional test: regress loss differential d_t on constant 1,
-      test coef = 0 via HAC t-statistic (Newey-West, bw = floor(P^(1/3))).
-    - One-sided p-value: H1 = enhanced has lower expected loss.
-
-    Reference
-    ---------
-    Giacomini, R. and H. White (2006). "Tests of Conditional Predictive
-    Ability." Econometrica 74(6): 1545-1578.
-
-    Usage
-    -----
-    oos = GaROOS(df=df, outcome="ip_yoy", gpr_col="gpr_z", gipi_col="gipi")
-    results = oos.run(horizons=[3, 6, 12], eval_start="2010-01-01")
-    oos.save("outputs/oos_results.csv")
-    """
-
-    QUANTILES = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
-
-    def __init__(
-        self,
-        df:          pd.DataFrame,
-        outcome:     str   = "ip_yoy",
-        gpr_col:     str   = "gpr_z",
-        gipi_col:    str   = "gipi",
-        quantiles:   list[float] | None = None,
-        window:      int   = 120,   # fixed rolling window (months); 120 = 10 years
-    ):
-        self.df        = df.copy()
-        self.outcome   = outcome
-        self.gpr_col   = gpr_col
-        self.gipi_col  = gipi_col if gipi_col in df.columns else None
-        self.quantiles = quantiles or self.QUANTILES
-        self.window    = window    # fixed m in G&W notation
-        self._results: dict[int, OOSResult] = {}
-
-        if not SM_AVAILABLE and not SKL_AVAILABLE:
-            raise ImportError("statsmodels or scikit-learn required.")
-
-    # --------------------------------------------------------------------------
-    def run(
-        self,
-        horizons:   list[int] | None = None,
-        eval_start: str = "2010-01-01",
-    ) -> dict[int, OOSResult]:
-        """
-        Run rolling-window OOS backtest for each horizon.
-
-        At each forecast origin t >= eval_start the model is estimated on
-        the fixed window [t-m, t) where m = self.window.  This implements
-        the Giacomini-White (2006) design: m is fixed, not growing, so
-        G&W Theorem 1 applies and the test statistic is asymptotically N(0,1)
-        even for nested models.
-
-        Returns dict[horizon -> OOSResult].
-        """
-        horizons = horizons or [3, 6, 12]
-
-        # FCI and interaction: full-sample PCA weights held fixed.
-        # Known limitation flagged in paper (Section VIII).
-        fci = build_fci(self.df)
-        df  = self.df.copy()
-        df["fci"] = fci
-
-        if self.gipi_col:
-            gpr_z  = (df[self.gpr_col]  - df[self.gpr_col].mean())  / (df[self.gpr_col].std()  + 1e-9)
-            gipi_z = (df[self.gipi_col] - df[self.gipi_col].mean()) / (df[self.gipi_col].std() + 1e-9)
-            df["gpr_x_gipi"] = gpr_z * gipi_z
-
-        eval_idx = pd.Timestamp(eval_start)
-
-        for h in horizons:
-            log.info(f"GW OOS backtest: h={h}, window={self.window}m, "
-                     f"eval_start={eval_start} ...")
-            result = self._run_horizon(df, h, eval_idx)
-            self._results[h] = result
-            log.info(
-                f"  h={h} GW OOS: n={result.n_oos}  "
-                f"impr τ=0.05={result.improvement.get(0.05, np.nan):.1f}%  "
-                f"τ=0.10={result.improvement.get(0.10, np.nan):.1f}%  "
-                f"GW p(0.05)={result.dm_pval.get(0.05, np.nan):.3f}"
-            )
-
-        return self._results
-
-    # --------------------------------------------------------------------------
-    def _run_horizon(
-        self, df: pd.DataFrame, h: int, eval_idx: pd.Timestamp
-    ) -> OOSResult:
-
-        # Predictor columns
-        base_cols = [c for c in [self.gpr_col, "fci", self.outcome] if c in df.columns]
-        enh_cols  = base_cols.copy()
-        if self.gipi_col:
-            enh_cols.append(self.gipi_col)
-        if "gpr_x_gipi" in df.columns:
-            enh_cols.append("gpr_x_gipi")
-
-        # Build aligned (X, y) panel for full sample
-        y_fwd   = df[self.outcome].shift(-h)
-        all_c   = list(dict.fromkeys(base_cols + enh_cols))  # preserve order, dedupe
-        panel   = pd.concat([y_fwd.rename("y"), df[all_c]], axis=1).dropna()
-
-        # OOS origins: all dates >= eval_idx where y_{t+h} is observable
-        oos_mask = (panel.index >= eval_idx)
-        oos_dates = panel.index[oos_mask]
-
-        if len(oos_dates) < 12:
-            log.warning(f"  h={h}: too few OOS obs ({len(oos_dates)}) — skipping")
-            return OOSResult(horizon=h, eval_start=str(eval_idx.date()), n_oos=0)
-
-        # Storage: loss differences per origin per quantile
-        loss_base = {q: [] for q in self.quantiles}
-        loss_enh  = {q: [] for q in self.quantiles}
-
-        for t in oos_dates:
-            # Fixed rolling window: train on [t-window, t)  — Giacomini-White design.
-            # Window is FIXED at self.window months; does not grow with t.
-            t_pos   = panel.index.get_loc(t)
-            win_end = t_pos          # exclusive
-            win_start = t_pos - self.window
-            if win_start < 0:
-                continue             # not enough history before this origin
-            train = panel.iloc[win_start:win_end]
-            if len(train) < self.window:
-                continue
-
-            Y_train = train["y"].values
-
-            # Null: sample quantile of training y
-            null_q = {q: np.quantile(Y_train, q) for q in self.quantiles}
-
-            for q in self.quantiles:
-                y_true = panel.loc[t, "y"]
-                if np.isnan(y_true):
-                    continue
-
-                for spec_cols, store in [(base_cols, loss_base), (enh_cols, loss_enh)]:
-                    avail = [c for c in spec_cols if c in train.columns]
-                    if not avail:
-                        store[q].append(np.nan)
-                        continue
-                    X_train = train[avail].values.astype(float)
-                    X_t     = panel.loc[[t], avail].values.astype(float)
-
-                    try:
-                        scaler  = StandardScaler()
-                        Xs      = scaler.fit_transform(X_train)
-                        Xt_s    = scaler.transform(X_t)
-
-                        # OOS always uses sklearn QuantileRegressor.
-                        # statsmodels QuantReg has version-dependent kwargs
-                        # that cause silent NaN failures in rolling windows.
-                        # sklearn solver='highs' is reliable for n=120 windows.
-                        if not SKL_AVAILABLE:
-                            raise ImportError("scikit-learn required for OOS")
-                        qr   = QuantileRegressor(quantile=q, alpha=0, solver="highs")
-                        qr.fit(Xs, Y_train)
-                        yhat = float(qr.predict(Xt_s.reshape(1, -1))[0])
-
-                        store[q].append(_pinball_loss(
-                            np.array([y_true]), np.array([yhat]), q))
-                    except Exception as _oos_err:
-                        log.debug(f"  OOS t={t} q={q} spec={len(spec_cols)}cols: {_oos_err}")
-                        store[q].append(np.nan)
-
-        # Aggregate
-        result = OOSResult(
-            horizon=h,
-            eval_start=str(eval_idx.date()),
-            n_oos=len(oos_dates),
-        )
-
-        for q in self.quantiles:
-            lb = np.array([x for x in loss_base[q] if not np.isnan(x)])
-            le = np.array([x for x in loss_enh[q]  if not np.isnan(x)])
-            n  = min(len(lb), len(le))
-            if n < 4:
-                continue
-
-            lb, le = lb[:n], le[:n]
-            result.pinball_base[q] = float(np.mean(lb))
-            result.pinball_enh[q]  = float(np.mean(le))
-
-            # Null pinball (for pseudo-R²): compute from training quantiles
-            # approximate: use mean of loss_base as denominator anchor
-            # (true null would require storing null preds — approximation)
-            pb_b = result.pinball_base[q]
-            pb_e = result.pinball_enh[q]
-            result.improvement[q] = float(100 * (pb_b - pb_e) / pb_b) if pb_b > 0 else np.nan
-
-            # Giacomini-White (2006) test on loss differentials
-            d = lb - le   # positive = baseline worse = enhanced is better
-            gw_stat, gw_p = self._gw_test(d)
-            result.dm_stat[q] = gw_stat   # column kept as dm_stat for compatibility
-            result.dm_pval[q] = gw_p
-
-        return result
-
-    # --------------------------------------------------------------------------
-    @staticmethod
-    def _gw_test(d: np.ndarray) -> tuple[float, float]:
-        """
-        Giacomini-White (2006) unconditional test of equal predictive ability.
-
-        With a fixed rolling window of size m, G&W Theorem 1 gives:
-            sqrt(P) * d_bar / sqrt(LRV) -> N(0,1)  under H0
-        where P = number of OOS predictions and LRV is the long-run variance
-        of d_t estimated by Newey-West with bandwidth = floor(P^(1/3)).
-
-        H0: E[d_t] = 0   (equal expected loss)
-        H1: E[d_t] > 0   (baseline has higher loss; enhanced is better)
-        Returns (statistic, one-sided p-value).
-
-        Valid for NESTED models when window is fixed — no Clark-West
-        correction required (Giacomini & White 2006, Econometrica 74(6)).
-        """
-        from scipy import stats
-        n = len(d)
-        if n < 4:
-            return np.nan, np.nan
-        d_bar = np.mean(d)
-        # Newey-West LRV with bandwidth floor(P^(1/3))
-        h_bw = max(1, int(np.floor(n ** (1/3))))
-        gamma0 = np.var(d, ddof=1)
-        gammas = sum(
-            (1 - j / (h_bw + 1)) * 2 * np.cov(d[j:], d[:-j])[0, 1]
-            for j in range(1, h_bw + 1)
-        )
-        lrv = max(gamma0 + gammas, 1e-12)
-        gw_stat = d_bar / np.sqrt(lrv / n)      # asymptotically N(0,1)
-        p_val   = float(1 - stats.norm.cdf(gw_stat))   # one-sided
-        return float(gw_stat), p_val
-
-    # --------------------------------------------------------------------------
-    def summary(self) -> pd.DataFrame:
-        """Return tidy DataFrame of OOS results."""
-        rows = []
-        for h, r in sorted(self._results.items()):
-            for q in self.quantiles:
-                rows.append({
-                    "horizon":     h,
-                    "quantile":    q,
-                    "n_oos":       r.n_oos,
-                    "eval_start":  r.eval_start,
-                    "pb_base":     round(r.pinball_base.get(q, np.nan), 4),
-                    "pb_enh":      round(r.pinball_enh.get(q, np.nan), 4),
-                    "oos_impr%":   round(r.improvement.get(q, np.nan), 2),
-                    "dm_stat":     round(r.dm_stat.get(q, np.nan), 3),
-                    "dm_pval":     round(r.dm_pval.get(q, np.nan), 3),
-                })
-        return pd.DataFrame(rows)
-
-    # --------------------------------------------------------------------------
-    def save(self, path: str = "outputs/oos_results.csv") -> None:
-        """Save OOS summary to CSV."""
-        df = self.summary()
-        df.to_csv(path, index=False)
-        log.info(f"OOS results -> {path}")

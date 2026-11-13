@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GeoShock Monitor</title>
+<meta name="description" content="Live monitor of geopolitical threats, inflation transmission channels and US inflation and growth risk, based on Kalamara, 'Fire Without Smoke'.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23c2410c'/%3E%3Cpath d='M9 19l5-6 4 4 5-7' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js" defer></script>
+<script src="assets/app.js" defer></script>
+</head>
+<body>
+<header class="wrap">
+  <div class="eyebrow">GeoShock Monitor</div>
+  <h1>Do geopolitical threats reach US inflation right now?</h1>
+  <p class="lede">The answer depends on whether the cost-push channels (energy, food and import prices) are open.
+  This page tracks the threat level, the channel state and the risk to inflation and growth, using the models in
+  <em>Fire Without Smoke</em> re-estimated on the latest data.</p>
+  <p class="meta" id="meta">Loading…</p>
+</header>
+
+<main class="wrap">
+  <section class="kpis" id="kpis" aria-label="Headline indicators"></section>
+
+  <section class="card" id="verdict-card">
+    <h2>Current reading</h2>
+    <p id="verdict" class="verdict"></p>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>Threats vs acts</h2>
+      <p class="note">Caldara–Iacoviello threats (GPRT) and acts (GPRA) subindices, <i>z</i>-scores since 1985. Dotted lines at 1.5 and 2.5.</p>
+      <div id="ch-gpr" class="chart"></div>
+    </div>
+    <div class="card">
+      <h2>Channel state (GIPI)</h2>
+      <p class="note">First principal component of energy, import-price and food inflation, supply-chain pressure and breakeven changes. Above the dashed median = channels open.</p>
+      <div id="ch-gipi" class="chart"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>How a threat shock reaches inflation</h2>
+    <p class="note">Response of headline CPI inflation (pp) to a one-standard-deviation increase in GPRT, by channel state in the previous month. Fully interacted local projections, 90% Newey–West bands. The path for the current state is highlighted.</p>
+    <div id="ch-lp" class="chart tall"></div>
+    <p id="lp-text" class="small"></p>
+  </section>
+
+  <section class="card">
+    <h2>Inflation-at-Risk</h2>
+    <p class="note">Predictive quantiles of headline CPI inflation (YoY, %). <b>Baseline</b>: threats + financial conditions. <b>With channels</b>: adds lagged GIPI and its interaction with threats. <b>Layer 0 scenario</b>: replaces the official threat reading with today’s nowcast.</p>
+    <div class="tabs" role="tablist" id="iar-tabs"></div>
+    <div id="ch-iar" class="chart"></div>
+    <div class="tablewrap"><table id="tb-iar"></table></div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>Inflation channels</h2>
+      <p class="note">Inputs to GIPI, last five years.</p>
+      <div id="ch-channels" class="chart tall"></div>
+    </div>
+    <div class="card">
+      <h2>Growth-at-Risk (IP)</h2>
+      <p class="note">Threats and channel state carry no significant information for the industrial-production distribution in the paper; shown for completeness.</p>
+      <div class="tablewrap"><table id="tb-gar"></table></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Layer 0: real-time threat nowcast</h2>
+    <p class="note">GDELT news + CAMEO event coding + tanker-market proxy. ẑ = 0.6·(0.4·S) + 0.4·(last official GPRT <i>z</i>). Elevated ≥ 1.5, crisis ≥ 2.5.</p>
+    <div class="grid2 inner">
+      <div id="l0-detail"></div>
+      <div id="ch-l0" class="chart"></div>
+    </div>
+  </section>
+
+  <section class="card notes">
+    <h2>Notes</h2>
+    <ul>
+      <li>Models: Kalamara (2026), <em>Fire Without Smoke: Geopolitical Threats, Inflation Channels, and the 2023–25 Decoupling</em>. Code and replication files: <a href="https://github.com/Elenikal/geoshock">github.com/Elenikal/geoshock</a>.</li>
+      <li>Data: Caldara–Iacoviello GPR; FRED; NY Fed GSCPI; Yahoo Finance; GDELT. Rebuilt daily by a GitHub Action; GIPI lags about three months because of IMF commodity-price publication.</li>
+      <li>Tail probabilities use a Gaussian matched to the median and the 10–90 range of the estimated quantiles. Estimates are in-sample, reduced-form associations, not forecasts with verified accuracy.</li>
+      <li>Not investment advice.</li>
+    </ul>
+  </section>
+</main>
+<footer class="wrap small">© Eleni Kalamara · <a href="data/dashboard.json">data (JSON)</a> · <a href="data/signals.json">Layer 0 archive</a></footer>
+</body>
+</html>

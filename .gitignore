@@ -33,3 +33,23 @@ __pycache__/
 # Paper and blog post (not for public repo)
 geoshock_paper.*
 linkedin_post.md
+.venv13/
+paper_backup/
+
+
+# Paper material — private (never publish)
+paper_backup/
+paper_tables/
+figures_white/
+outputs/paper/
+outputs/gipi_pca.json
+outputs/signals/
+make_paper_outputs.py
+data/raw_merged_*.parquet
+geoshock_paper*
+CLAUDE.md
+.claude/
+dashboard/test.py
+outputs/figures/fig0*
+outputs/figures/lp_gipi_split_*
+*.log

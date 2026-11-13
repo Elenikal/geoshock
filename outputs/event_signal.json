@@ -1,20 +1,18 @@
 {
-  "timestamp": "2026-04-08T01:58:43.123114+00:00",
-  "severity_score": 1.2,
-  "gpr_nowcast": 3.65,
-  "regime": "CRISIS",
+  "timestamp": "2026-10-21T18:44:23.353130+00:00",
+  "severity_score": 2.0,
+  "gpr_nowcast": 0.82,
+  "regime": "CALM",
   "cameo_codes": [
-    "16",
-    "195",
     "191",
-    "204"
+    "195"
   ],
   "ais_anomaly": true,
   "ais_signal": {
-    "tanker_z": -1.271,
-    "brent_wti_spread": -2.13,
-    "brent_wti_z": -2.168,
-    "freight_z": -0.603,
+    "tanker_z": 1.281,
+    "brent_wti_spread": 11.66,
+    "brent_wti_z": 1.499,
+    "freight_z": -0.439,
     "anomaly": true,
     "tickers_used": [
       "INSW",
@@ -25,14 +23,16 @@
     ]
   },
   "article_count": 50,
-  "location_hit_rate": 0.42,
+  "location_hit_rate": 0.24,
   "top_headlines": [
-    "ljyn hinta l\u00e4hti kovaan sukellukseen Trumpin ilmoitettua lykkv\u00e4ns\u00e4 Iran - iskuja",
-    "Trump delays Iran infrastructure bombing by 2 weeks after threatening  whole civilization  ",
-    "Trump recua e aceita suspender ataques ao Ir\u00e3 por duas semanas",
-    "What did Donald Trump two - week Iran ceasefire announcement say ? Full text",
-    "Pre\u00e7os de passagens a\u00e9reas disparam com guerra no Ir\u00e3"
+    "US must maintain ties with Pakistan - Pakistan Today",
+    "Trump approval rating hits new low",
+    "Saudi - led coalition says it intercepted , destroyed drones",
+    "T\u00fcrkiye plans mandate to send military personnel to Saudia",
+    "Saudi capital airport reopens to limited traffic , and other Mideast news"
   ],
   "llm_used": false,
-  "llm_summary": "Rule-based CAMEO (LLM unavailable)."
+  "llm_summary": "Rule-based CAMEO (LLM unavailable).",
+  "gpr_anchor_z": 0.861,
+  "anchor_month": "2025-12-01"
 }

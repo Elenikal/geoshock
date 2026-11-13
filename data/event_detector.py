@@ -49,6 +49,7 @@ import logging
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -207,7 +208,8 @@ _GDELT_API = "https://api.gdeltproject.org/api/v2/doc/doc"
 
 _GDELT_QUERY = (
     "(Iran OR Israel OR Hamas OR Houthi OR Yemen OR Hormuz OR Syria OR Iraq) "
-    "AND (military OR strike OR attack OR missile OR war OR nuclear OR blockade)"
+    "AND (military OR strike OR attack OR missile OR war OR nuclear OR blockade) "
+    "sourcelang:english"
 )
 
 
@@ -358,7 +360,7 @@ def _clean_text(text: str) -> str:
 def llm_cameo_code(
     headlines: list[str],
     api_key: Optional[str] = None,
-    model: str = "claude-haiku-4-5-20251001",
+    model: str = "claude-haiku-5-5",
 ) -> dict:
     """LLM CAMEO coding via isolated subprocess (Unicode-safe)."""
     if not headlines:
@@ -567,21 +569,16 @@ def _composite_severity(
     ais:        Optional[AISSignal],
 ) -> float:
     """
-    Weighted composite:
-      50% LLM/rule-based article severity
-      30% 75th-percentile of per-article rule scores
-      20% AIS proxy severity
+    Composite severity S_t on a 0–10 scale (paper Eq. severity):
+      S_t = 0.5·s^LLM + 0.3·P75(per-article rule scores) + 0.2·10·1[AIS anomaly]
+    s^LLM is the rule-based batch severity when the LLM is unavailable.
     """
     llm_sev = float(llm_result.get("overall_severity", 0.0))
 
     per_article = [rule_based_cameo(a.get("title",""))[1] for a in articles]
     art_sev = float(np.percentile(per_article, 75)) if per_article else 0.0
 
-    ais_sev = 0.0
-    if ais:
-        ais_sev = min(10.0, (abs(ais.tanker_z) + max(0, ais.freight_z) + max(0, ais.brent_wti_z)) * 1.5)
-        if ais.anomaly:
-            ais_sev = max(ais_sev, 6.0)  # floor at 6 if anomaly confirmed
+    ais_sev = 10.0 if (ais and ais.anomaly) else 0.0
 
     return round(min(10.0, max(0.0, 0.50*llm_sev + 0.30*art_sev + 0.20*ais_sev)), 2)
 
@@ -612,6 +609,8 @@ class EventDetector:
         max_articles:    int  = 50,
         ais_tickers:     list[str] | None = None,
         ais_z_threshold: float = 1.5,
+        gpr_anchor_z:    float | None = None,
+        archive:         bool = True,
     ) -> EventSignal:
         """
         Run full Layer 0 detection.
@@ -624,6 +623,9 @@ class EventDetector:
         max_articles    : Max GDELT articles to fetch
         ais_tickers     : VLCC operator tickers (default: INSW, TK, TRMD, FRO)
         ais_z_threshold : Sigma threshold for AIS anomaly flag
+        gpr_anchor_z    : last official GPRT z-score (default: read from the
+                          cached master dataset)
+        archive         : also write the signal to outputs/signals/<UTC>.json
 
         Returns
         -------
@@ -670,28 +672,12 @@ class EventDetector:
         # 5. Composite severity + GPR nowcast
         severity = _composite_severity(raw, llm_res, ais)
 
-        # gpr_z: prefer LLM estimate ONLY when LLM was actually used.
-        # The rule-based path's gpr_z_estimate uses a 75th-percentile aggregation
-        # that washes out tail signals when most articles are non-ME — even when
-        # violent CAMEO codes (191/195/etc.) are detected. Always derive from
-        # max CAMEO severity in that case.
-        if llm_res.get("llm_used") and llm_res.get("gpr_z_estimate") is not None:
-            gpr_z = float(llm_res["gpr_z_estimate"])
-        else:
-            # Rule-based (or LLM unavailable): derive z from max CAMEO severity
-            detected_codes = llm_res.get("dominant_cameo_codes", [])
-            if detected_codes:
-                max_sev = max(
-                    CAMEO_SEVERITY.get(str(c), 0.0) for c in detected_codes
-                )
-                # map 0-10 CAMEO severity → GPR z-score (calibrated: sev=8 ≈ z=2.5)
-                gpr_z = round(max_sev * 0.35, 2)
-            else:
-                gpr_z = round(severity / 3.33, 2)
-
-        if ais and ais.anomaly:
-            gpr_z = min(4.0, gpr_z + 0.5)
-            log.info("  ?  AIS anomaly -> GPR z boosted +0.5")
+        # GPRT nowcast (paper Eq. nowcast):
+        #   ẑ_t = 0.6·(0.4·S_t) + 0.4·z^GPRT_{t-1}
+        # 0.4 maps S ∈ [0,10] to z units; the last official GPRT z is the anchor.
+        anchor = gpr_anchor_z if gpr_anchor_z is not None else _last_official_gprt_z()
+        gpr_z = 0.6 * (0.4 * severity) + 0.4 * anchor
+        log.info(f"  nowcast: S={severity:.2f}  anchor z={anchor:.2f}  →  ẑ={gpr_z:.2f}")
 
         sig = EventSignal(
             timestamp=ts,
@@ -712,7 +698,33 @@ class EventDetector:
                  f"severity={sig.severity_score:.1f}  "
                  f"gpr_z={sig.gpr_nowcast:.2f}  "
                  f"ais_anomaly={sig.ais_anomaly}")
+        if archive:
+            _archive_signal(sig, anchor)
         return sig
+
+
+def _last_official_gprt_z() -> float:
+    """Last GPRT z-score in the cached master dataset (0.0 if unavailable)."""
+    p = Path(__file__).resolve().parent / "cache" / "master_dataset.parquet"
+    try:
+        z = pd.read_parquet(p, columns=["gpr_z"])["gpr_z"].dropna()
+        return float(z.iloc[-1])
+    except Exception as e:
+        log.warning(f"  GPRT anchor unavailable ({e}); using 0.0")
+        return 0.0
+
+
+def _archive_signal(sig: "EventSignal", anchor: float) -> None:
+    """Write a timestamped copy so dated snapshots are reproducible."""
+    import json
+    d = Path(__file__).resolve().parent.parent / "outputs" / "signals"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        out = dict(sig.to_dict(), gpr_anchor_z=round(anchor, 3))
+        (d / f"{sig.timestamp.strftime('%Y%m%dT%H%M%SZ')}.json").write_text(
+            json.dumps(out, indent=2, default=str))
+    except Exception as e:
+        log.warning(f"  signal archive failed: {e}")
 
 
 # ===============================================================================

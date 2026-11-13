@@ -17,10 +17,9 @@ Usage
   python run.py --use-cache        Skip API data fetch
   python run.py --no-llm           Rule-based CAMEO (no Anthropic key needed)
   python run.py --skip-var         Skip VAR (faster iteration)
-  python run.py --skip-oos         Skip OOS backtest (slow; ~5-10 min)
-  python run.py --skip-var --skip-oos --skip-iv   Fastest full run
+  python run.py --skip-var --skip-iv   Fastest full run
   python run.py --skip-iv          Skip IV endogeneity check
-  python populate_oos_table.py     After run: auto-fill OOS table in paper
+  python make_paper_outputs.py     Rebuild every paper table and figure
   python run.py --lookback 72      GDELT lookback hours (default 48)
 ─────────────────────────────────────────────────────────────────────────────
 """
@@ -150,18 +149,11 @@ def run_local_projections(df: pd.DataFrame) -> dict:
 
 # ─────────────────────────────────────────────────────────────────────────────
 def run_growth_at_risk(df: pd.DataFrame, l0_signal: dict | None = None) -> dict:
-    # Layer 0 real-time update: inject gpr_nowcast as current-month observation
-    if l0_signal and l0_signal.get("gpr_nowcast") and "gpr_z" in df.columns:
-        nowcast = float(l0_signal["gpr_nowcast"])
-        today = pd.Timestamp.today().normalize()
-        if today not in df.index:
-            last_row = df.iloc[-1].copy()
-            last_row["gpr_z"] = nowcast
-            last_row.name = today
-            df = pd.concat([df, last_row.to_frame().T])
-        else:
-            df.loc[today, "gpr_z"] = nowcast
-        log.info("  L0 real-time update: gpr_z=%.2f injected", nowcast)
+    # Layer 0: the real-time GPRT nowcast replaces gpr_z at the forecast
+    # origin only (scenario "enhanced_l0"); it never enters estimation.
+    l0_z = None
+    if l0_signal and l0_signal.get("gpr_nowcast"):
+        l0_z = float(l0_signal["gpr_nowcast"])
     log.info("\n" + "━" * 58)
     log.info("  LAYER 2B — GROWTH-AT-RISK  v2  (GPR + FCI + GIPI + GPR×GIPI)")
     log.info("━" * 58)
@@ -188,6 +180,14 @@ def run_growth_at_risk(df: pd.DataFrame, l0_signal: dict | None = None) -> dict:
                          f"P(rec)={r.prob_recession:.1%}  "
                          f"skew={r.conditional_skewness:+.2f}")
             results[spec] = {"gar": gar, "results": res}
+
+            if spec == "enhanced" and l0_z is not None:
+                gar_l0 = GrowthAtRisk(df=df, outcome="ip_yoy", gpr_col="gpr_z",
+                                      gipi_col="gipi" if use_g else None, use_interaction=use_i)
+                res_l0 = gar_l0.fit(horizons=horizons, verbose=False,
+                                    nowcast_overrides={"gpr_z": l0_z})
+                results["enhanced_l0"] = {"gar": gar_l0, "results": res_l0}
+                log.info(f"  Layer 0 scenario: gpr_z={l0_z:.2f} at origin {gar_l0.origin_.date()}")
 
             if spec == "enhanced":
                 for h in horizons:
@@ -218,50 +218,15 @@ def run_growth_at_risk(df: pd.DataFrame, l0_signal: dict | None = None) -> dict:
                 for h in horizons:
                     impr_05 = rob_result.improvement.get(h, {}).get(0.05, np.nan)
                     impr_10 = rob_result.improvement.get(h, {}).get(0.10, np.nan)
-                    orth_sig = rob_result.orth_significant.get(h, False)
+                    p_05 = rob_result.orth_p.get(h, {}).get(0.05, np.nan)
                     log.info(f"  h={h:2d}: pinball impr τ=0.05={impr_05:.1f}%  "
-                             f"τ=0.10={impr_10:.1f}%  "
-                             f"orth_significant={orth_sig}")
+                             f"τ=0.10={impr_10:.1f}%  orth δ⊥ p(τ=0.05)={p_05:.3f}")
             except Exception as e:
                 log.warning(f"  Robustness checks error: {e}")
 
         return results
     except Exception as e:
         log.error(f"  GaR error: {e}")
-        return {}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-def run_oos(df: pd.DataFrame) -> dict:
-    log.info("\n" + "━" * 58)
-    log.info("  LAYER 2D — PSEUDO-OOS BACKTEST  (expanding window, 2010-2025)")
-    log.info("━" * 58)
-    try:
-        from models.quantile_risk import GaROOS
-        gipi_ok = "gipi" in df.columns and df["gipi"].notna().sum() >= 36
-        oos = GaROOS(
-            df=df, outcome="ip_yoy", gpr_col="gpr_z",
-            gipi_col="gipi" if gipi_ok else None,
-        )
-        results = oos.run(horizons=cfg.GAR_HORIZONS, eval_start="2010-01-01")
-
-        # Log headline results
-        for h, r in results.items():
-            impr_05 = r.improvement.get(0.05, np.nan)
-            impr_10 = r.improvement.get(0.10, np.nan)
-            p_05    = r.dm_pval.get(0.05, np.nan)
-            p_10    = r.dm_pval.get(0.10, np.nan)
-            log.info(
-                f"  h={h:2d} OOS (n={r.n_oos}):  "
-                f"impr τ=0.05={impr_05:.1f}% (DM p={p_05:.3f})  "
-                f"τ=0.10={impr_10:.1f}% (DM p={p_10:.3f})"
-            )
-
-        cfg.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        oos.save(str(cfg.OUTPUT_DIR / "oos_results.csv"))
-        return {"oos": oos, "results": results}
-    except Exception as e:
-        log.error(f"  OOS error: {e}")
         return {}
 
 
@@ -343,7 +308,8 @@ def export_summary(df: pd.DataFrame, l0: dict, gar: dict) -> None:
                 "gar_25": round(r.gar_25, 2),
                 "p_neg": round(r.prob_neg_growth, 4),
                 "p_rec": round(r.prob_recession, 4),
-                "skew": round(r.conditional_skewness, 4),
+                "skew_bowley": round(r.conditional_skewness, 4),
+                "origin": str(r.origin.date()),
             })
     if rows:
         tbl = pd.DataFrame(rows)
@@ -384,8 +350,6 @@ def main():
     ap.add_argument("--use-cache",    action="store_true")
     ap.add_argument("--no-llm",       action="store_true")
     ap.add_argument("--skip-var",     action="store_true")
-    ap.add_argument("--skip-oos",     action="store_true",
-                    help="Skip pseudo-OOS backtest (slow)")
     ap.add_argument("--skip-iv",      action="store_true",
                     help="Skip IV endogeneity check")
     ap.add_argument("--lookback",     type=int, default=48,
@@ -414,8 +378,6 @@ def main():
     gar  = run_growth_at_risk(df, l0_signal=l0 if not args.skip_layer0 else None)
     if not args.skip_var:
         _var = run_var(df)
-    if not args.skip_oos:
-        _oos = run_oos(df)
     if not args.skip_iv:
         _iv = run_iv(df)
 
