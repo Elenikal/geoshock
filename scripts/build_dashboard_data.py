@@ -208,4 +208,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:                      # surface the reason in the public run summary
+        if os.getenv("GITHUB_ACTIONS"):
+            msg = f"{type(e).__name__}: {e}".replace("\n", " ")[:500]
+            print(f"::error title=Dashboard build failed::{msg}")
+        raise
