@@ -37,6 +37,7 @@ for _noisy in [
 ]:
     logging.getLogger(_noisy).setLevel(logging.ERROR)
 
+import io
 import json
 import sys
 from datetime import datetime, timezone
@@ -180,7 +181,7 @@ def load_event_signal(
 @st.cache_data(ttl=7200, show_spinner="Estimating Growth-at-Risk …")
 def compute_gar(df_json: str, outcome: str, horizon: int,
                 use_gipi: bool = True) -> dict:
-    df = pd.read_json(df_json)
+    df = pd.read_json(io.StringIO(df_json))
     df.index = pd.to_datetime(df.index)
     from models.quantile_risk import GrowthAtRisk
     gipi_ok = use_gipi and ("gipi" in df.columns and df["gipi"].notna().sum() >= 36)
@@ -221,7 +222,7 @@ def compute_gar(df_json: str, outcome: str, horizon: int,
 @st.cache_data(ttl=7200, show_spinner="Estimating Local Projections …")
 def compute_lp(df_json: str, outcome: str, shock: str,
                horizon: int, n_bs: int) -> dict:
-    df = pd.read_json(df_json)
+    df = pd.read_json(io.StringIO(df_json))
     df.index = pd.to_datetime(df.index)
     from models.local_projections import LocalProjections
     lp = LocalProjections(df, shock=shock, outcome=outcome,
@@ -240,7 +241,7 @@ def compute_lp(df_json: str, outcome: str, shock: str,
 @st.cache_data(ttl=7200, show_spinner="Estimating state-dependent local projections …")
 def compute_lp_state(df_json: str, outcome: str, horizon: int) -> dict:
     """Fully interacted LP: GPRT shock × 1[GIPI_{t-1} ≥ median] (paper §V)."""
-    df = pd.read_json(df_json)
+    df = pd.read_json(io.StringIO(df_json))
     df.index = pd.to_datetime(df.index)
     from models.local_projections import LocalProjections
     st_ = df["gipi"].shift(1)
